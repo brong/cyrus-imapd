@@ -11,7 +11,7 @@ chomp($branch);
 
 my $date = `date -R`;
 
-my $CYRUSLIBS = "cyruslibs-fastmail-v17";
+my $CYRUSLIBS = "cyruslibs-fastmail-v18";
 
 my $basename = "cyrus-$branch";
 my $basedir = $branch eq 'fastmail' ? 'usr/cyrus' : "usr/$basename";
