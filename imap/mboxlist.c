@@ -1539,7 +1539,7 @@ mboxlist_delayed_deletemailbox(const char *name, int isadmin,
                                localonly /* local_only */,
                                force, 1);
 
-    if (!r) {
+    if (!r && !mboxlist_haschildren(name)) {
         r = mboxlist_delete_intermediaries(name, mbentry->foldermodseq+1);
     }
 
@@ -1656,9 +1656,10 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
 
     if (!isremote && !mboxname_isdeletedmailbox(name, NULL)) {
         /* store a DELETED marker */
+        int haschildren = mboxlist_haschildren(name);
         mbentry_t *newmbentry = mboxlist_entry_create();
         newmbentry->name = xstrdupnull(name);
-        newmbentry->mbtype = MBTYPE_DELETED;
+        newmbentry->mbtype = haschildren ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED;
         if (mailbox) {
             newmbentry->uniqueid = xstrdupnull(mailbox->uniqueid);
             newmbentry->uidvalidity = mailbox->i.uidvalidity;
@@ -1667,7 +1668,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
         }
         r = mboxlist_update(newmbentry, /*localonly*/1);
 
-        if (!r) {
+        if (!r && !haschildren) {
             r = mboxlist_delete_intermediaries(name, newmbentry->foldermodseq);
         }
 
@@ -1896,6 +1897,10 @@ EXPORTED int mboxlist_renamemailbox(const char *oldname, const char *newname,
     newmbentry->createdmodseq = newmailbox->i.createdmodseq;
     newmbentry->foldermodseq = newmailbox->i.highestmodseq;
 
+    /* is this delayed delete of a mailbox with a children? */
+    int is_deleted_ancestor = (mboxname_isdeletedmailbox(newmbentry->name, NULL)
+                               && mboxlist_haschildren(oldmbentry->name));
+
     do {
         r = 0;
 
@@ -1904,7 +1909,8 @@ EXPORTED int mboxlist_renamemailbox(const char *oldname, const char *newname,
             /* store a DELETED marker */
             mbentry_t *oldmbentry = mboxlist_entry_create();
             oldmbentry->name = xstrdupnull(oldmailbox->name);
-            oldmbentry->mbtype = MBTYPE_DELETED;
+            oldmbentry->mbtype =
+                is_deleted_ancestor ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED;
             oldmbentry->uidvalidity = oldmailbox->i.uidvalidity;
             oldmbentry->uniqueid = xstrdupnull(oldmailbox->uniqueid);
             newmbentry->createdmodseq = oldmailbox->i.createdmodseq;
@@ -3489,6 +3495,15 @@ static int mboxlist_changequota(const mbentry_t *mbentry, void *rock)
     /* Note, we're a callback, and it's not a huge tragedy if we
      * fail, so we don't ever return a failure */
     return 0;
+}
+
+EXPORTED int mboxlist_haschildren(const char *mboxname)
+{
+    int exists = 0;
+
+    mboxlist_mboxtree(mboxname, exists_cb, &exists, MBOXTREE_SKIP_ROOT);
+
+    return exists;
 }
 
 EXPORTED void mboxlist_done(void)
