@@ -6221,6 +6221,12 @@ static int jmap_thread_get(jmap_req_t *req)
         goto done;
     }
 
+    /* Refuse to fetch more than 500 ids at once */
+    if (json_array_size(get.ids) > 500) {
+        jmap_error(req, json_pack("{s:s}", "type", "requestTooLarge"));
+        goto done;
+    }
+
     /* Find threads */
     int r = _thread_get(req, get.ids, get.list, get.not_found);
     if (r) {
@@ -7456,6 +7462,12 @@ static int jmap_email_get(jmap_req_t *req)
 
     /* Refuse to fetch *all* Email */
     if (!JNOTNULL(get.ids)) {
+        jmap_error(req, json_pack("{s:s}", "type", "requestTooLarge"));
+        goto done;
+    }
+
+    /* Refuse to fetch more than 500 ids at once */
+    if (json_array_size(get.ids) > 500) {
         jmap_error(req, json_pack("{s:s}", "type", "requestTooLarge"));
         goto done;
     }
