@@ -184,7 +184,7 @@ struct jmap_changes {
     /* Response fields */
     char *new_state;
     short has_more_changes;
-    json_t *added;
+    json_t *created;
     json_t *changed;
     json_t *destroyed;
 };
@@ -646,7 +646,7 @@ static void jmap_changes_parse(json_t *jargs,
                                json_t **err)
 {
     memset(changes, 0, sizeof(struct jmap_changes));
-    changes->added = json_array();
+    changes->created = json_array();
     changes->changed = json_array();
     changes->destroyed = json_array();
 
@@ -675,7 +675,7 @@ static void jmap_changes_parse(json_t *jargs,
 static void jmap_changes_fini(struct jmap_changes *changes)
 {
     free(changes->new_state);
-    json_decref(changes->added);
+    json_decref(changes->created);
     json_decref(changes->changed);
     json_decref(changes->destroyed);
 }
@@ -687,7 +687,7 @@ static json_t *jmap_changes_reply(struct jmap_changes *changes)
     json_object_set_new(res, "newState", json_string(changes->new_state));
     json_object_set_new(res, "hasMoreChanges",
             json_boolean(changes->has_more_changes));
-    json_object_set(res, "added", changes->added);
+    json_object_set(res, "created", changes->created);
     json_object_set(res, "changed", changes->changed);
     json_object_set(res, "destroyed", changes->destroyed);
     return res;
@@ -837,7 +837,7 @@ static void jmap_querychanges_parse(json_t *jargs,
 
     memset(query, 0, sizeof(struct jmap_querychanges));
     query->removed = json_array();
-    query->added = json_array();
+    query->created = json_array();
 
     json_t *unsupported_filter = json_array();
     json_t *unsupported_sort = json_array();
@@ -915,7 +915,7 @@ static void jmap_querychanges_fini(struct jmap_querychanges *query)
 {
     free(query->new_queryState);
     json_decref(query->removed);
-    json_decref(query->added);
+    json_decref(query->created);
 }
 
 static json_t *jmap_querychanges_reply(struct jmap_querychanges *query)
@@ -928,7 +928,7 @@ static json_t *jmap_querychanges_reply(struct jmap_querychanges *query)
     json_object_set_new(res, "upToId", query->up_to_id ?
             json_string(query->up_to_id) : json_null());
     json_object_set(res, "removed", query->removed);
-    json_object_set(res, "added", query->added);
+    json_object_set(res, "created", query->created);
     json_object_set_new(res, "total", json_integer(query->total));
     return res;
 }
@@ -2921,7 +2921,7 @@ done:
 }
 
 struct _mbox_changes_data {
-    json_t *added;          /* maps mailbox ids to {id:foldermodseq} */
+    json_t *created;          /* maps mailbox ids to {id:foldermodseq} */
     json_t *changed;        /* maps mailbox ids to {id:foldermodseq} */
     json_t *destroyed;      /* maps mailbox ids to {id:foldermodseq} */
     modseq_t since_modseq;
@@ -2964,7 +2964,7 @@ static int _mbox_changes_cb(const mbentry_t *mbentry, void *rock)
     /* Is this a more recent update for an id that we have already seen?
      * (check all three) */
     json_t *old[3];
-    old[0] = data->added;
+    old[0] = data->created;
     old[1] = data->changed;
     old[2] = data->destroyed;
     int i;
@@ -2991,7 +2991,7 @@ static int _mbox_changes_cb(const mbentry_t *mbentry, void *rock)
         if (mbentry->createdmodseq <= data->since_modseq)
             dest = data->changed;
         else
-            dest = data->added;
+            dest = data->created;
     }
 
     if (dest)
@@ -3044,7 +3044,7 @@ static int _mbox_changes(jmap_req_t *req,
     if (r) goto done;
 
     /* Sort updates by modseq */
-    json_object_foreach(data.added, id, val) {
+    json_object_foreach(data.created, id, val) {
         ptrarray_add(&updates, val);
     }
     json_object_foreach(data.changed, id, val) {
@@ -3071,8 +3071,8 @@ static int _mbox_changes(jmap_req_t *req,
         if (windowmodseq < modseq)
             windowmodseq = modseq;
 
-        if (json_object_get(data.added, id)) {
-            json_array_append_new(changes->added, json_string(id));
+        if (json_object_get(data.created, id)) {
+            json_array_append_new(changes->created, json_string(id));
         } else if (json_object_get(data.changed, id)) {
             json_array_append_new(changes->changed, json_string(id));
         } else {
@@ -3080,7 +3080,7 @@ static int _mbox_changes(jmap_req_t *req,
         }
     }
 
-    if (!json_array_size(changes->added) && !json_array_size(changes->changed) && !json_array_size(changes->destroyed)) {
+    if (!json_array_size(changes->created) && !json_array_size(changes->changed) && !json_array_size(changes->destroyed)) {
         *only_counts_changed = 0;
     }
 
