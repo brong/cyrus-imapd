@@ -23,6 +23,7 @@
 #include "mailbox.h"
 #include "mboxlist.h"
 #include "message.h"
+#include "ptrarray.h"
 #include "util.h"
 #include "xmalloc.h"
 #include "xunlink.h"
@@ -33,7 +34,10 @@
 /* config.c stuff */
 const int config_need_data = CONFIG_NEED_PARTITION_DATA;
 
-enum { UNKNOWN, DUMP, UNDUMP, ZERO, BUILD, RECALC, AUDIT, CHECKFOLDERS, ZEROMODSEQ, ENABLE_COMPACTIDS };
+enum { UNKNOWN, DUMP, UNDUMP, ZERO, BUILD, RECALC, AUDIT, CHECKFOLDERS, ZEROMODSEQ, ENABLE_COMPACTIDS, SHOWMISMATCHES, FIXMISMATCHES };
+
+/* getopt values for long-only options (must be > any short option char) */
+enum { OPT_FIX_MISMATCHES = 256 };
 
 static int recalc_repair  = 0;
 static int recalc_upgrade = 0;
@@ -343,6 +347,169 @@ static int do_build(const char *userid)
     if (r) return r;
 
     r = mboxlist_usermboxtree(userid, NULL, build_cid_cb, state, 0);
+
+    conversations_commit(&state);
+    return r;
+}
+
+struct fixthread_fix {
+    char *mboxname;
+    uint32_t uid;
+    conversation_id_t cid;
+};
+
+struct fixthread_member {
+    char *mboxname;   // resolved only when applying fixes (really); else NULL
+    int foldernum;
+    uint32_t uid;
+    conversation_id_t cid;
+};
+
+struct fixthread_rock {
+    const char *userid;
+    struct conversations_state *state;
+    int really;
+    // full GUID of the current EmailId group's first member ([0]==0 if none)
+    char groupguid[2*MESSAGE_GUID_SIZE+1];
+    ptrarray_t members; // struct fixthread_member* for the current group
+    ptrarray_t fixes;   // struct fixthread_fix* accumulated across all groups
+};
+
+// process one completed EmailId group: converge every member onto a single
+// CID, then reset the group.  We pick the highest CID in the group, which is
+// how a freshly-threaded message merges candidate conversations (arrayu64_max
+// in message_update_conversations); records with no CID converge onto it too,
+// the same way a new record would adopt the GUID's CID.
+static void fixthread_flush(struct fixthread_rock *frock)
+{
+    int n = ptrarray_size(&frock->members);
+    int i;
+
+    conversation_id_t target = 0;
+    for (i = 0; i < n; i++) {
+        struct fixthread_member *m = ptrarray_nth(&frock->members, i);
+        if (m->cid > target) target = m->cid;
+    }
+
+    // target == 0 means every member is NULL - there's nothing to anchor to
+    // (that's a job for -b/--rebuild), so leave them alone
+    if (target) {
+        for (i = 0; i < n; i++) {
+            struct fixthread_member *m = ptrarray_nth(&frock->members, i);
+            if (m->cid == target) continue;
+
+            printf("%s CID change! M%.24s " CONV_FMT "/" CONV_FMT " (%d:%u)\n",
+                   frock->userid, frock->groupguid, m->cid, target,
+                   m->foldernum, m->uid);
+
+            if (frock->really && m->mboxname) {
+                struct fixthread_fix *fix = xzmalloc(sizeof(struct fixthread_fix));
+                fix->mboxname = m->mboxname;   // hand over ownership
+                m->mboxname = NULL;
+                fix->uid = m->uid;
+                fix->cid = target;
+                ptrarray_append(&frock->fixes, fix);
+            }
+        }
+    }
+
+    struct fixthread_member *m;
+    while ((m = ptrarray_pop(&frock->members))) {
+        free(m->mboxname);
+        free(m);
+    }
+    frock->groupguid[0] = '\0';
+}
+
+static int fixthread_cb(const conv_guidrec_t *rec, void *rock)
+{
+    struct fixthread_rock *frock = (struct fixthread_rock *)rock;
+
+    if (rec->part) return 0;
+
+    // group by EmailId - yeah, 24, that's the length of EmailId in JMAPLand
+    if (!frock->groupguid[0] || strncmp(rec->guidrep, frock->groupguid, 24)) {
+        fixthread_flush(frock);
+        memcpy(frock->groupguid, rec->guidrep, 2*MESSAGE_GUID_SIZE);
+        frock->groupguid[2*MESSAGE_GUID_SIZE] = '\0';
+    }
+    else if (strncmp(rec->guidrep, frock->groupguid, 2*MESSAGE_GUID_SIZE)) {
+        // same EmailId but a different full GUID: distinct messages sharing a
+        // JMAP EmailId.  This should be astronomically unlikely.
+        printf("%s EMAILID DISASTER! %s / %.*s\n",
+               frock->userid, frock->groupguid, 2*MESSAGE_GUID_SIZE, rec->guidrep);
+    }
+
+    struct fixthread_member *m = xzmalloc(sizeof(struct fixthread_member));
+    m->foldernum = rec->foldernum;
+    m->uid = rec->uid;
+    m->cid = rec->cid;
+    // resolve the mailbox now (rec is only valid during the callback), but only
+    // when we might actually rewrite - the fix is applied after the foreach,
+    // because mailbox_rewrite_index_record writes into the same conversations DB
+    // that conversations_guid_foreach is iterating over.
+    if (frock->really) {
+        mbentry_t *mbentry = NULL;
+        if (!conv_guidrec_mbentry(rec, &mbentry) && mbentry)
+            m->mboxname = xstrdup(mbentry->name);
+        else
+            printf("%s Failed to look up mailbox for %s (%d:%u)\n",
+                   frock->userid, frock->groupguid, rec->foldernum, rec->uid);
+        mboxlist_entry_free(&mbentry);
+    }
+    ptrarray_append(&frock->members, m);
+
+    return 0;  // keep going
+}
+
+static int apply_fixthread_fix(struct fixthread_fix *fix)
+{
+    struct mailbox *mailbox = NULL;
+    struct index_record record;
+    int r = mailbox_open_iwl(fix->mboxname, &mailbox);
+    if (!r) r = mailbox_find_index_record(mailbox, fix->uid, &record);
+    if (!r) {
+        // converge onto the target CID, and drop any split-conversation state
+        // so the record becomes a plain member of that conversation.  Both must
+        // be cleared: mailbox_rewrite_index_record restores basecid from the old
+        // record while FLAG_INTERNAL_SPLITCONVERSATION is set.
+        record.cid = fix->cid;
+        record.basecid = NULLCONVERSATION;
+        record.internal_flags &= ~FLAG_INTERNAL_SPLITCONVERSATION;
+        r = mailbox_rewrite_index_record(mailbox, &record);
+    }
+    if (r) {
+        printf("Failed to rewrite %s:%u! %s - this may need a full rebuild\n",
+               fix->mboxname, fix->uid, error_message(r));
+    }
+    mailbox_close(&mailbox);
+
+    return r;
+}
+
+static int do_fixthread(const char *userid, int really)
+{
+    struct conversations_state *state = NULL;
+    int r;
+
+    r = conversations_open_user(userid, 0/*shared*/, &state);
+    if (r) return r;
+
+    struct fixthread_rock rock = { userid, state, really, "",
+                                   PTRARRAY_INITIALIZER, PTRARRAY_INITIALIZER };
+    r = conversations_guid_foreach(state, "", fixthread_cb, &rock);
+    fixthread_flush(&rock); // the final group
+
+    // apply the collected fixes now that iteration is complete - rewriting an
+    // index record updates this same conversations DB
+    struct fixthread_fix *fix;
+    while ((fix = ptrarray_pop(&rock.fixes))) {
+        if (!r) r = apply_fixthread_fix(fix);
+        free(fix->mboxname);
+        free(fix);
+    }
+    ptrarray_fini(&rock.fixes);
+    ptrarray_fini(&rock.members);
 
     conversations_commit(&state);
     return r;
@@ -1031,6 +1198,16 @@ static int do_user(const char *userid, void *rock)
             r = EX_NOINPUT;
         break;
 
+    case SHOWMISMATCHES:
+        if (do_fixthread(userid, 0))
+            r = EX_NOINPUT;
+        break;
+
+    case FIXMISMATCHES:
+        if (do_fixthread(userid, 1))
+            r = EX_NOINPUT;
+        break;
+
     case CHECKFOLDERS:
         if (do_checkfolders(userid))
             r = EX_NOINPUT;
@@ -1073,13 +1250,15 @@ int main(int argc, char **argv)
     int r = 0;
 
     /* keep in alphabetical order */
-    static const char short_options[] = "AC:FMRST:bdruUvzZ:I:";
+    static const char short_options[] = "AC:FMRST:bdmruUvzZ:I:";
 
     static const struct option long_options[] = {
         { "audit", no_argument, NULL, 'A' },
         /* n.b. no long option for -C */
         { "check-folders", no_argument, NULL, 'F' },
         { "clearmodseq", no_argument, NULL, 'M' },
+        { "fix-mismatches", no_argument, NULL, OPT_FIX_MISMATCHES },
+        { "show-mismatches", no_argument, NULL, 'm' },
         { "update-counts", no_argument, NULL, 'R' },
         { "split", no_argument, NULL, 'S' },
         { "audit-temp-directory", required_argument, NULL, 'T' },
@@ -1190,6 +1369,18 @@ int main(int argc, char **argv)
             rock = (void *) &enable_compactids;
             break;
 
+        case 'm':
+            if (mode != UNKNOWN)
+                usage(argv[0]);
+            mode = SHOWMISMATCHES;
+            break;
+
+        case OPT_FIX_MISMATCHES:
+            if (mode != UNKNOWN)
+                usage(argv[0]);
+            mode = FIXMISMATCHES;
+            break;
+
         case 'v':
             verbose++;
             break;
@@ -1258,6 +1449,8 @@ static int usage(const char *name)
     fprintf(stderr, "    -A             audit conversations DB counts\n");
     fprintf(stderr, "    -F             check folder names\n");
     fprintf(stderr, "    -I switch      enable/disable compact emailids.  1/on/yes to enable\n");
+    fprintf(stderr, "    -m             show thread mismatches\n");
+    fprintf(stderr, "    --fix-mismatches  fix thread mismatches\n");
     fprintf(stderr, "    -T dir         store temporary data for audit in dir\n");
     fprintf(stderr, "\n");
     fprintf(stderr, "    -r             recursive mode: username is a prefix\n");
