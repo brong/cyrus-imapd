@@ -1609,6 +1609,19 @@ EXPORTED void buf_refresh_mmap(struct buf *buf, int onceonly, int fd,
                 size, fname, mboxname);
 }
 
+/*
+ * As above, but a read/write mmap()ing is created.
+ */
+EXPORTED void buf_refresh_mmap_rw(struct buf *buf, int onceonly, int fd,
+                            const char *fname, size_t size, const char *mboxname)
+{
+    assert(!buf->alloc);
+    buf->flags = BUF_MMAP;
+    map_refresh_rw(fd, onceonly, (const char **)&buf->s, &buf->len,
+                size, fname, mboxname);
+}
+
+
 EXPORTED void buf_free(struct buf *buf)
 {
     if (!buf) return;

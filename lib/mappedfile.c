@@ -93,6 +93,12 @@ static void _ensure_mapped(struct mappedfile *mf, size_t offset, int update)
     buf_refresh_mmap(&mf->map_buf, /*onceonly*/0, mf->fd, mf->fname,
                   offset, /*mboxname*/NULL);
 
+    /* if opened rw, also update rw mapping */
+    if (mf->use_mmap_write && mf->is_rw) {
+        buf_refresh_mmap_rw(&mf->map_buf_rw, /*onceonly*/0, mf->fd, mf->fname,
+                       offset, /*mboxname*/NULL);
+    }
+
     mf->map_size = offset;
 }
 
@@ -113,6 +119,7 @@ EXPORTED int mappedfile_open(struct mappedfile **mfp,
     mf = xzmalloc(sizeof(struct mappedfile));
     mf->fname = xstrdup(fname);
     mf->is_rw = (flags & MAPPEDFILE_RW) ? 1 : 0;
+    mf->use_mmap_write = 1; /*libcyrus_config_getswitch(...)*/;
 
     mf->fd = open(mf->fname, openmode, 0644);
     if (mf->fd < 0 && errno == ENOENT) {
@@ -173,6 +180,7 @@ EXPORTED int mappedfile_close(struct mappedfile **mfp)
         r = close(mf->fd);
 
     buf_free(&mf->map_buf);
+    buf_free(&mf->map_buf_rw);
     free(mf->fname);
     free(mf);
 
@@ -212,6 +220,7 @@ EXPORTED int mappedfile_readlock(struct mappedfile *mf)
         }
         if (sbuf.st_ino == sbuffile.st_ino) break;
         buf_free(&mf->map_buf);
+        buf_free(&mf->map_buf_rw);
 
         newfd = open(mf->fname, O_RDWR, 0644);
         if (newfd == -1) {
@@ -255,7 +264,10 @@ EXPORTED int mappedfile_writelock(struct mappedfile *mf)
     mf->lock_status = MF_WRITELOCKED;
     gettimeofday(&mf->starttime, 0);
 
-    if (changed) buf_free(&mf->map_buf);
+    if (changed) {
+        buf_free(&mf->map_buf);
+        buf_free(&mf->map_buf_rw);
+    }
 
     _ensure_mapped(mf, sbuf.st_size, /*update*/0);
 
@@ -296,12 +308,20 @@ EXPORTED int mappedfile_unlock(struct mappedfile *mf)
 
 EXPORTED int mappedfile_commit(struct mappedfile *mf)
 {
+    int r;
     assert(mf->fd != -1);
 
     if (!mf->dirty)
         return 0; /* nice, nothing to do */
 
     assert(mf->is_rw);
+
+    if (mf->is_oversized) {
+        /* Set to final size */
+        r = mappedfile_truncate(mf, mf->real_size);
+        if (r < 0) return r;
+        mf->is_oversized = 0;
+    }
 
     if (mf->was_resized) {
         if (fsync(mf->fd) < 0) {
@@ -341,26 +361,47 @@ EXPORTED ssize_t mappedfile_pwrite(struct mappedfile *mf,
 
     mf->dirty++;
 
-    /* locate the file handle */
-    pos = lseek(mf->fd, offset, SEEK_SET);
-    if (pos < 0) {
-        xsyslog(LOG_ERR, "IOERROR: lseek failed",
-                         "filename=<%s> offset=<" OFF_T_FMT ">",
-                         mf->fname, offset);
-        return -1;
-    }
+    if (mf->use_mmap_write) {
+        int r = 0;
 
-    /* write the buffer */
-    written = retry_write(mf->fd, base, len);
-    if (written < 0) {
-        xsyslog(LOG_ERR, "IOERROR: retry_write failed",
-                         "filename=<%s> len=<" SIZE_T_FMT ">"
-                            " offset=<" OFF_T_FMT ">",
-                         mf->fname, len, offset);
-        return -1;
-    }
+        /* Ensure file is big enough and mapped for write */
+        if (offset + len > mf->map_size) {
+            mf->is_oversized = 1;
+            mf->real_size = offset + len;
+            r = mappedfile_truncate(mf, mf->real_size * 2);
+            if (r < 0) return r;
 
-    _ensure_mapped(mf, pos+written, /*update*/1);
+        /* If already oversized, update real_size if writing to end */
+        } else if (mf->is_oversized && offset + len > mf->real_size) {
+           mf->real_size = offset + len;
+        }
+
+        /* Just copy to into memory */
+        memcpy(mappedfile_base_rw(mf) + offset, base, len);
+        written = len;
+
+    } else {
+        /* locate the file handle */
+        pos = lseek(mf->fd, offset, SEEK_SET);
+        if (pos < 0) {
+            xsyslog(LOG_ERR, "IOERROR: lseek failed",
+                             "filename=<%s> offset=<" OFF_T_FMT ">",
+                             mf->fname, offset);
+            return -1;
+        }
+
+        /* write the buffer */
+        written = retry_write(mf->fd, base, len);
+        if (written < 0) {
+            xsyslog(LOG_ERR, "IOERROR: retry_write failed",
+                             "filename=<%s> len=<" SIZE_T_FMT ">"
+                                " offset=<" OFF_T_FMT ">",
+                             mf->fname, len, offset);
+            return -1;
+        }
+
+        _ensure_mapped(mf, pos+written, /*update*/1);
+    }
 
     return written;
 }
@@ -389,31 +430,61 @@ EXPORTED ssize_t mappedfile_pwritev(struct mappedfile *mf,
 
     mf->dirty++;
 
-    /* locate the file handle */
-    pos = lseek(mf->fd, offset, SEEK_SET);
-    if (pos < 0) {
-        xsyslog(LOG_ERR, "IOERROR: lseek failed",
-                         "filename=<%s> offset=<" OFF_T_FMT ">",
-                         mf->fname, offset);
-        return -1;
-    }
-
-    /* write the buffer */
-    written = retry_writev(mf->fd, iov, nio);
-    if (written < 0) {
+    if (mf->use_mmap_write) {
+        /* Calculate total write length first */
         size_t len = 0;
-        int i;
+        int i, r = 0;
         for (i = 0; i < nio; i++) {
             len += iov[i].iov_len;
         }
-        xsyslog(LOG_ERR, "IOERROR: retry_writev failed",
-                         "filename=<%s> len=<" SIZE_T_FMT ">"
-                            " offset=<" OFF_T_FMT ">",
-                         mf->fname, len, offset);
-        return -1;
-    }
 
-    _ensure_mapped(mf, pos+written, /*update*/1);
+        /* Ensure file is big enough and mapped for write */
+        if (offset + len > mf->map_size) {
+            mf->is_oversized = 1;
+            mf->real_size = offset + len;
+            r = mappedfile_truncate(mf, mf->real_size * 2);
+            if (r < 0) return r;
+
+        /* If already oversized, update real_size if writing to end */
+        } else if (mf->is_oversized && offset + len > mf->real_size) {
+           mf->real_size = offset + len;
+        }
+
+        /* Just copy to into memory */
+        len = 0;
+        for (i = 0; i < nio; i++) {
+            memcpy(mappedfile_base_rw(mf) + offset + len, iov[i].iov_base, iov[i].iov_len);
+            len += iov[i].iov_len;
+        }
+        written = len;
+
+    } else {
+        /* locate the file handle */
+        pos = lseek(mf->fd, offset, SEEK_SET);
+        if (pos < 0) {
+            xsyslog(LOG_ERR, "IOERROR: lseek failed",
+                             "filename=<%s> offset=<" OFF_T_FMT ">",
+                             mf->fname, offset);
+            return -1;
+        }
+
+        /* write the buffer */
+        written = retry_writev(mf->fd, iov, nio);
+        if (written < 0) {
+            size_t len = 0;
+            int i;
+            for (i = 0; i < nio; i++) {
+                len += iov[i].iov_len;
+            }
+            xsyslog(LOG_ERR, "IOERROR: retry_writev failed",
+                             "filename=<%s> len=<" SIZE_T_FMT ">"
+                                " offset=<" OFF_T_FMT ">",
+                             mf->fname, len, offset);
+            return -1;
+        }
+
+        _ensure_mapped(mf, pos+written, /*update*/1);
+    }
 
     return written;
 }

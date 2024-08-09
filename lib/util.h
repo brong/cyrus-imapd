@@ -347,6 +347,8 @@ void buf_initmcstr(struct buf *buf, char *str);
 void buf_init_ro_cstr(struct buf *buf, const char *str);
 void buf_refresh_mmap(struct buf *buf, int onceonly, int fd,
                    const char *fname, size_t size, const char *mboxname);
+void buf_refresh_mmap_rw(struct buf *buf, int onceonly, int fd,
+                   const char *fname, size_t size, const char *mboxname);
 void buf_free(struct buf *buf);
 void buf_move(struct buf *dst, struct buf *src);
 const char *buf_lcase(struct buf *buf);

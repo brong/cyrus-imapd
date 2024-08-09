@@ -70,6 +70,7 @@
 
 #include "util.h"
 #include "xsha1.h"
+#include <stdbool.h>
 
 #define charset_base64_len_unpadded(n) \
     ((n) * 4 / 3)

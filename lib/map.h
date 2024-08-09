@@ -64,6 +64,12 @@ extern void map_refresh(int fd, int onceonly, const char **base,
                         size_t *len, size_t newlen,
                         const char *name, const char *mboxname);
 
+/* As above, but the mapping is also marked PROT_WRITE
+ */
+extern void map_refresh_rw(int fd, int onceonly, const char **base,
+                 size_t *len, size_t newlen,
+                 const char *name, const char *mboxname);
+
 /* map_free will free a memory map allocated by map_refresh
  *
  * base and len are the same values that were passed to map_refresh */

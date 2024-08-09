@@ -53,6 +53,7 @@ struct mappedfile {
 
     /* obviously you will need 64 bit size_t for 64 bit files... */
     struct buf map_buf;
+    struct buf map_buf_rw;
     size_t map_size;
 
     /* the file itself */
@@ -63,6 +64,9 @@ struct mappedfile {
     int dirty;
     int was_resized;
     int is_rw;
+    int use_mmap_write;
+    int is_oversized;
+    size_t real_size;
 
     struct timeval starttime;
 };
@@ -101,7 +105,8 @@ extern int mappedfile_rename(struct mappedfile *mf, const char *newname);
 #define mappedfile_iswritelocked(mf) ((mf)->lock_status == MF_WRITELOCKED)
 #define mappedfile_iswritable(mf) (!!(mf)->is_rw)
 #define mappedfile_base(mf) ((const char *)((mf)->map_buf.s))
-#define mappedfile_size(mf) ((mf)->map_size)
+#define mappedfile_base_rw(mf) ((char *)((mf)->map_buf_rw.s))
+#define mappedfile_size(mf) ((mf)->is_oversized ? (mf)->real_size : (mf)->map_size)
 #define mappedfile_buf(mf) ((const struct buf *)(&((mf)->map_buf)))
 #define mappedfile_fname(mf) ((const char *)((mf)->fname))
 

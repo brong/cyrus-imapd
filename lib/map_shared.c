@@ -59,9 +59,9 @@ EXPORTED const char map_method_desc[] = "shared";
 /*
  * Create/refresh mapping of file
  */
-EXPORTED void map_refresh(int fd, int onceonly, const char **base,
+void map_refresh_base(int fd, int onceonly, const char **base,
                  size_t *len, size_t newlen,
-                 const char *name, const char *mboxname)
+                 const char *name, const char *mboxname, int is_rw)
 {
     struct stat sbuf;
     char buf[256];
@@ -95,7 +95,7 @@ EXPORTED void map_refresh(int fd, int onceonly, const char **base,
     if (!onceonly)
         newlen = (newlen + 2*SLOP) & ~(SLOP-1);
 
-    *base = (char *)mmap((caddr_t)0, onceonly ? newlen + 1 : newlen, PROT_READ, MAP_SHARED
+    *base = (char *)mmap((caddr_t)0, onceonly ? newlen + 1 : newlen, PROT_READ | (is_rw ? PROT_WRITE : 0), MAP_SHARED
 #ifdef MAP_FILE
 | MAP_FILE
 #endif
@@ -104,7 +104,7 @@ EXPORTED void map_refresh(int fd, int onceonly, const char **base,
 #endif
                          , fd, 0L);
     if (*base == (char *)-1) {
-        syslog(LOG_ERR, "IOERROR: mapping %s file%s%s: %m", name,
+        syslog(LOG_ERR, "IOERROR: mapping %s (is_rw=%d) file%s%s: %m", name, is_rw,
                mboxname ? " for " : "", mboxname ? mboxname : "");
         snprintf(buf, sizeof(buf), "failed to mmap %s file", name);
         fatal(buf, EX_IOERR);
@@ -112,6 +112,20 @@ EXPORTED void map_refresh(int fd, int onceonly, const char **base,
     *len = newlen;
 
     slowio_maybe_delay_read(newlen);
+}
+
+EXPORTED void map_refresh(int fd, int onceonly, const char **base,
+                 size_t *len, size_t newlen,
+                 const char *name, const char *mboxname)
+{
+    map_refresh_base(fd, onceonly, base, len, newlen, name, mboxname, 0);
+}
+
+EXPORTED void map_refresh_rw(int fd, int onceonly, const char **base,
+                 size_t *len, size_t newlen,
+                 const char *name, const char *mboxname)
+{
+    map_refresh_base(fd, onceonly, base, len, newlen, name, mboxname, 1);
 }
 
 /*
