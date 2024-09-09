@@ -1573,7 +1573,7 @@ EXPORTED int conversation_load_advanced(struct conversations_state *state,
     } else if (r != CYRUSDB_OK) {
         return IMAP_INTERNAL;
     }
-    xstats_inc(CONV_LOAD);
+    /*xstats_inc(CONV_LOAD);*/
 
     r = conversation_parse(data, datalen, conv, flags);
 
