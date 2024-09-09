@@ -451,11 +451,15 @@ static int recovery2(struct dbengine *db, int *count);
 #define FNAME(db) mappedfile_fname((db)->mf)
 
 /* calculate padding size */
+#ifdef HAVE_DECLARE_OPTIMIZE
+static inline size_t roundup(size_t record_size, int howfar)
+    __attribute__((optimize("-O3")));
+#endif
 static inline size_t roundup(size_t record_size, int howfar)
 {
-    if (record_size % howfar)
-        record_size += howfar - (record_size % howfar);
-    return record_size;
+    size_t rounded_record_size = record_size + howfar - 1;
+    rounded_record_size -= rounded_record_size % howfar;
+    return rounded_record_size;
 }
 
 /* choose a level appropriately randomly */
