@@ -923,30 +923,34 @@ static int relocate(struct dbengine *db)
 static int relocate(struct dbengine *db)
 {
     struct skiploc *loc = &db->loc;
-    struct skiprecord newrecord;
+    struct skiprecord bufrecords[2];
+    int bufnum = 0;
+    struct skiprecord * currecord, * lastrecord;
     size_t offset;
     size_t oldoffset = 0;
     uint8_t level;
     uint8_t i;
     int cmp = -1; /* never found a thing! */
     int r;
+    int flip = 1;
 
     /* pointer validity */
     loc->generation = db->header.generation;
     loc->end = db->end;
 
     /* start with the dummy */
-    r = read_onerecord(db, DUMMY_OFFSET, &loc->record);
+    currecord = lastrecord = &bufrecords[bufnum];
+    r = read_onerecord(db, DUMMY_OFFSET, currecord);
     loc->is_exactmatch = 0;
 
     /* initialise pointers */
-    level = loc->record.level;
-    newrecord.offset = 0;
-    loc->backloc[level] = loc->record.offset;
+    level = currecord->level;
+    loc->backloc[level] = currecord->offset;
     loc->forwardloc[level] = 0;
 
     /* special case start pointer for efficiency */
     if (!loc->keybuf.len) {
+        loc->record = *currecord;
         for (i = 0; i < loc->record.level; i++) {
             loc->backloc[i] = loc->record.offset;
             loc->forwardloc[i] = _getloc(db, &loc->record, i);
@@ -955,26 +959,34 @@ static int relocate(struct dbengine *db)
     }
 
     while (level) {
-        offset = _getloc(db, &loc->record, level-1);
+        offset = _getloc(db, lastrecord, level-1);
 
-        loc->backloc[level-1] = loc->record.offset;
+        loc->backloc[level-1] = lastrecord->offset;
         loc->forwardloc[level-1] = offset;
 
         if (offset != oldoffset) {
             oldoffset = offset;
-            r = read_skipdelete(db, offset, &newrecord);
+
+            /* Flip buffer and read record into it */
+            if (flip) {
+                bufnum ^= 0x1;
+                currecord = &bufrecords[bufnum];
+                flip = 0;
+            }
+
+            r = read_skipdelete(db, offset, currecord);
             if (r) return r;
 
-            if (newrecord.offset) {
-                assert(newrecord.level >= level);
+            if (currecord->offset) {
+                assert(currecord->level >= level);
 
-                cmp = db->compar(KEY(db, &newrecord), newrecord.keylen,
+                cmp = db->compar(KEY(db, currecord), currecord->keylen,
                                  loc->keybuf.s, loc->keybuf.len);
 
                 /* not there?  stay at this level */
                 if (cmp < 0) {
-                    /* move the offset range along */
-                    loc->record = newrecord;
+                    flip = 1;
+                    lastrecord = currecord;
                     continue;
                 }
             }
@@ -985,7 +997,7 @@ static int relocate(struct dbengine *db)
 
     if (cmp == 0) { /* we found it exactly */
         loc->is_exactmatch = 1;
-        loc->record = newrecord;
+        loc->record = *currecord;
 
         for (i = 0; i < loc->record.level; i++)
             loc->forwardloc[i] = _getloc(db, &loc->record, i);
@@ -994,6 +1006,10 @@ static int relocate(struct dbengine *db)
         r = check_tailcrc(db, &loc->record);
 
         if (r) return r;
+
+    } else {
+        /* If we didn't find it, return the record immediately before */
+        loc->record = *lastrecord;
     }
 
     return 0;
