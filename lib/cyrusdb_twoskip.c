@@ -595,14 +595,15 @@ static int read_onerecord(struct dbengine *db, size_t offset,
     const char *base = BASE(db);
     size_t size = SIZE(db);
     const char *ptr = base + offset;
+#ifdef HAVE_DECLARE_OPTIMIZE
+    __builtin_prefetch(ptr);
+#endif
     int i;
-
-    memset(record, 0, sizeof(struct skiprecord));
-
-    if (!offset) return 0;
 
     record->offset = offset;
     record->len = 24; /* absolute minimum */
+
+    if (!offset) return 0;
 
     /* need space for at least the header plus some details */
     if (record->offset + record->len > size)
