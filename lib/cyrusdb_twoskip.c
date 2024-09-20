@@ -1371,7 +1371,7 @@ static int opendb(const char *fname, int flags, struct dbengine **ret, struct tx
 {
     struct dbengine *db;
     int r;
-    int mappedfile_flags = MAPPEDFILE_RW;
+    int mappedfile_flags = MAPPEDFILE_RW | MAPPEDFILE_WRITEMMAP;
 
     assert(fname);
     assert(ret);

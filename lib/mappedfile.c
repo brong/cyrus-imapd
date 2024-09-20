@@ -120,7 +120,7 @@ EXPORTED int mappedfile_open(struct mappedfile **mfp,
     mf = xzmalloc(sizeof(struct mappedfile));
     mf->fname = xstrdup(fname);
     mf->is_rw = (flags & MAPPEDFILE_RW) ? 1 : 0;
-    mf->use_mmap_write = 1; /*libcyrus_config_getswitch(...)*/;
+    mf->use_mmap_write = (flags & MAPPEDFILE_WRITEMMAP) ? 1 : 0;
 
     mf->fd = open(mf->fname, openmode, 0644);
     if (mf->fd < 0 && errno == ENOENT) {

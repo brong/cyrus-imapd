@@ -71,8 +71,9 @@ struct mappedfile {
     struct timeval starttime;
 };
 
-#define MAPPEDFILE_CREATE (1<<0)
-#define MAPPEDFILE_RW     (1<<1)
+#define MAPPEDFILE_CREATE    (1<<0)
+#define MAPPEDFILE_RW        (1<<1)
+#define MAPPEDFILE_WRITEMMAP (1<<2)
 
 #define MF_UNLOCKED 0
 #define MF_READLOCKED 1
