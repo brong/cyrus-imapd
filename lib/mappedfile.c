@@ -64,6 +64,7 @@
 #include <limits.h>
 #include <errno.h>
 #include <syslog.h>
+#include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
@@ -321,6 +322,14 @@ EXPORTED int mappedfile_commit(struct mappedfile *mf)
         r = mappedfile_truncate(mf, mf->real_size);
         if (r < 0) return r;
         mf->is_oversized = 0;
+    }
+
+    if (mf->use_mmap_write) {
+        if (msync(mf->map_buf_rw.s, mf->map_buf_rw.len, MS_SYNC)) {
+            xsyslog(LOG_ERR, "IOERROR: msync failed",
+                             "filename=<%s>", mf->fname);
+            return -EIO;
+        }
     }
 
     if (mf->was_resized) {
