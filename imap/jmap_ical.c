@@ -289,7 +289,7 @@ static void blobid_from_data(struct jmapical_ctx *jmapctx,
                              const char *href)
 {
     // need a real Cyrus message for ATTACH smart blob ids
-    if (!jmapctx->from_ical.cyrus_msg.mboxid) return;
+    if (!jmapctx->from_ical.cyrus_msg.uniqueid) return;
 
     const char *semcol = strchr(href + 5, ';');
     if (!semcol || strncasecmp(semcol, ";base64,", 8))
@@ -304,7 +304,7 @@ static void blobid_from_data(struct jmapical_ctx *jmapctx,
     struct message_guid guid = MESSAGE_GUID_INITIALIZER;
     message_guid_generate(&guid, buf_base(buf), buf_len(buf));
     jmap_encode_rawdata_blobid('I',
-            jmapctx->from_ical.cyrus_msg.mboxid,
+            jmapctx->from_ical.cyrus_msg.uniqueid,
             jmapctx->from_ical.cyrus_msg.uid,
             jmapctx->from_ical.cyrus_msg.partid,
             NULL, "ATTACH", &guid, blobid);

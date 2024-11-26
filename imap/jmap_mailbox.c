@@ -1258,13 +1258,13 @@ static int _mboxquery_cb(const mbentry_t *mbentry, void *rock)
             goto done;
         }
         if (!r) {
-            rec->parent_id = xstrdup(jmap_mailboxid_mbentry(req, mbparent));
+            rec->parent_id = xstrdup(jmap_mailboxid_mbentry(q->req, mbparent));
         }
         mboxlist_entry_free(&mbparent);
         r = 0;
     }
 
-    rec->id = xstrdup(jmap_mailboxid_mbentry(req, mbentry));
+    rec->id = xstrdup(jmap_mailboxid_mbentry(q->req, mbentry));
     rec->mbname = mbname;
     mbname = NULL; // takes ownership
     rec->foldermodseq = mbentry->foldermodseq;
@@ -1629,6 +1629,7 @@ done:
 }
 
 struct mboxquerychanges_rock {
+    jmap_req_t *req;
     hash_table *removed;
     modseq_t sincemodseq;
 };
@@ -1690,7 +1691,7 @@ static int jmap_mailbox_querychanges(jmap_req_t *req)
          * XXX the workaround is to report all mailboxes in removed,
          * until we have a sane way of tracking annotation changes */
 
-        struct mboxquerychanges_rock rock = { &removed, sincemodseq };
+        struct mboxquerychanges_rock rock = { req, &removed, sincemodseq };
         int r = mboxlist_usermboxtree(req->accountid, req->authstate,
                                       _mboxquerychanges_cb, &rock,
                                       MBOXTREE_TOMBSTONES|
@@ -3391,7 +3392,7 @@ static void _mboxset_state_mkentry_cb(const char *imapname, void *idptr, void *r
         break;
     default:
         assert(_findparent(imapname, &pmbentry) == 0);
-        entry->parent_id = xstrdup(jmap_mailboxid_mbentry(req, pmbentry));
+        entry->parent_id = xstrdup(jmap_mailboxid_mbentry(state->req, pmbentry));
         break;
     }
 

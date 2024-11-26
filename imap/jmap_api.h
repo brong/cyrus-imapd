@@ -598,9 +598,10 @@ extern int jmap_set_sharewith(struct mailbox *mbox,
 extern void jmap_parse_sharewith_patch(json_t *arg, json_t **shareWith);
 
 extern void jmap_mbentry_cache_free(jmap_req_t *req);
-extern const mbentry_t *jmap_mbentry_by_uniqueid(jmap_req_t *req, const char *id);
-extern const mbentry_t *jmap_mbentry_by_uniqueid_all(jmap_req_t *req, const char *id);
-extern mbentry_t *jmap_mbentry_by_uniqueid_copy(jmap_req_t *req, const char *id);
+extern const mbentry_t *jmap_mbentry_by_mailboxid(jmap_req_t *req, const char *id);
+extern const mbentry_t *jmap_mbentry_by_mailboxid_all(jmap_req_t *req, const char *id);
+extern mbentry_t *jmap_mbentry_by_mailboxid_copy(jmap_req_t *req, const char *id);
+extern const char *jmap_mailboxid_mbentry(jmap_req_t *req, const mbentry_t *);
 extern mbentry_t *jmap_mbentry_from_dav(jmap_req_t *req, struct dav_data *dav);
 
 extern int jmap_findmbox_role(jmap_req_t *req, const char *role,

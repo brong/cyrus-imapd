@@ -1073,10 +1073,10 @@ void jmap_add_id(jmap_req_t *req, const char *creation_id, const char *id)
     hash_insert(creation_id, xstrdup(id), req->created_ids);
 }
 
-HIDDEN int jmap_openmbox_by_uniqueid(jmap_req_t *req, const char *id,
+HIDDEN int jmap_openmbox_by_mailboxid(jmap_req_t *req, const char *id,
                                      struct mailbox **mboxp, int rw)
 {
-    const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, id);
+    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, id);
 
     if (mbentry)
         return rw ? mailbox_open_iwl(mbentry->name, mboxp)
@@ -1422,7 +1422,7 @@ HIDDEN int jmap_myrights(jmap_req_t *req, const char *mboxname)
 HIDDEN int jmap_myrights_mboxid(jmap_req_t *req, const char *mboxid)
 {
     int rights = 0;
-    const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
+    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, mboxid);
     if (mbentry) {
         rights = jmap_myrights_mbentry(req, mbentry);
     }
@@ -1431,7 +1431,7 @@ HIDDEN int jmap_myrights_mboxid(jmap_req_t *req, const char *mboxid)
 
 HIDDEN int jmap_hasrights_mboxid(jmap_req_t *req, const char *mboxid, int rights)
 {
-    const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
+    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, mboxid);
     return mbentry ? jmap_hasrights_mbentry(req, mbentry, rights) : 0;
 }
 
@@ -3201,23 +3201,28 @@ static const mbentry_t *_mbentry_by_uniqueid(jmap_req_t *req,
     return mbentry;
 }
 
-EXPORTED const mbentry_t *jmap_mbentry_by_uniqueid(jmap_req_t *req,
+EXPORTED const mbentry_t *jmap_mbentry_by_mailboxid(jmap_req_t *req,
                                                    const char *id)
 {
     return _mbentry_by_uniqueid(req, id, 1/*scope*/);
 }
 
-EXPORTED const mbentry_t *jmap_mbentry_by_uniqueid_all(jmap_req_t *req,
+EXPORTED const mbentry_t *jmap_mbentry_by_mailboxid_all(jmap_req_t *req,
                                                        const char *id)
 {
     return _mbentry_by_uniqueid(req, id, 0/*scope*/);
 }
 
-EXPORTED mbentry_t *jmap_mbentry_by_uniqueid_copy(jmap_req_t *req, const char *id)
+EXPORTED mbentry_t *jmap_mbentry_by_mailboxid_copy(jmap_req_t *req, const char *id)
 {
     const mbentry_t *mbentry = _mbentry_by_uniqueid(req, id, 1/*scope*/);
     if (!mbentry) return NULL;
     return mboxlist_entry_copy(mbentry);
+}
+
+EXPORTED const char *jmap_mailboxid_from_mbentry(jmap_req_t *req, mbentry_t *mbentry)
+{
+    return req ? mbentry->uniqueid : NULL;
 }
 
 static void _free_mbentry(void *rock)
@@ -3364,7 +3369,7 @@ static int _mbox_find_specialuse(jmap_req_t *req, const char *use,
     }
 
     if (*mboxid) {
-        *mbentryptr = jmap_mbentry_by_uniqueid(req, mboxid);
+        *mbentryptr = jmap_mbentry_by_mailboxid(req, mboxid);
         r = 0;
     }
     else {

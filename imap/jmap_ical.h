@@ -125,7 +125,7 @@ struct jmapical_ctx {
     } to_ical;
     struct {
         struct {
-            const char *mboxid;
+            const char *uniqueid;
             uint32_t uid;
             const char *partid;
         } cyrus_msg;

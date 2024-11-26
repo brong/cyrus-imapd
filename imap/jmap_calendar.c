@@ -1729,7 +1729,7 @@ static int setcalendar_writeprops(jmap_req_t *req,
                 props->defaultalarms_with_date);
         if (r) {
             xsyslog(LOG_ERR, "failed to write defaultalarms",
-                    "mboxid=<%s> mboxname=<%s> userid=<%s> err=<%s>",
+                    "uniqueid=<%s> mboxname=<%s> userid=<%s> err=<%s>",
                     mailbox_uniqueid(mbox), mailbox_name(mbox),
                     req->userid, error_message(r));
         }
@@ -1843,7 +1843,7 @@ static void setcalendars_destroy(jmap_req_t *req, const char *calid,
     r = caldav_delmbox(db, mbentry);
     if (r) {
         xsyslog(LOG_ERR, "failed to delete mailbox from caldav_db",
-                "mboxname=<%s> mboxid=<%s> err=<%s>",
+                "mboxname=<%s> uniqueid=<%s> err=<%s>",
                 mbentry->name, mbentry->uniqueid, error_message(r));
         goto done;
     }
@@ -2358,7 +2358,7 @@ static int jmap_calendarevent_getblob(jmap_req_t *req, jmap_getblob_context_t *c
 {
     struct mailbox *mailbox = NULL;
     icalcomponent *ical = NULL;
-    char *mboxid = NULL;
+    char *uniqueid = NULL;
     char *userid = NULL;
     char *partid = NULL;
     uint32_t uid;
@@ -2370,7 +2370,7 @@ static int jmap_calendarevent_getblob(jmap_req_t *req, jmap_getblob_context_t *c
 
     if (ctx->blobid[0] != 'I') return 0;
 
-    if (!jmap_decode_rawdata_blobid(ctx->blobid, &mboxid, &uid, &partid,
+    if (!jmap_decode_rawdata_blobid(ctx->blobid, &uniqueid, &uid, &partid,
                                     &userid, &subpart, &guid)) {
         res = HTTP_BAD_REQUEST;
         goto done;
@@ -2388,14 +2388,8 @@ static int jmap_calendarevent_getblob(jmap_req_t *req, jmap_getblob_context_t *c
         }
     }
 
-    const mbentry_t *mbentry;
-    if (ctx->from_accountid) {
-        mboxlist_lookup_by_uniqueid(mboxid, &freeme, NULL);
-        mbentry = freeme;
-    }
-    else {
-        mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
-    }
+    mboxlist_lookup_by_uniqueid(uniqueid, &freeme, NULL);
+    const mbentry_t *mbentry = freeme;
     if (!jmap_hasrights_mbentry(req, mbentry, JACL_READITEMS)) {
         res = HTTP_NOT_FOUND;
         goto done;
@@ -2591,7 +2585,7 @@ done:
     if (ical) icalcomponent_free(ical);
     mailbox_close(&mailbox);
     mboxlist_entry_free(&freeme);
-    free(mboxid);
+    free(uniqueid);
     free(partid);
     free(userid);
     free(subpart);
@@ -2599,7 +2593,7 @@ done:
 }
 
 static void add_calendarevent_blobids(json_t *jsevent,
-                                      const char *mboxid,
+                                      const char *uniqueid,
                                       uint32_t imap_uid,
                                       const char *userid,
                                       const struct message_guid *guid)
@@ -2607,14 +2601,14 @@ static void add_calendarevent_blobids(json_t *jsevent,
     struct buf blobid = BUF_INITIALIZER;
 
     json_t *jblobid = json_null();
-    if (jmap_encode_rawdata_blobid('I', mboxid, imap_uid, NULL,
+    if (jmap_encode_rawdata_blobid('I', uniqueid, imap_uid, NULL,
                 userid, "G", guid, &blobid)) {
         jblobid = json_string(buf_cstring(&blobid));
     }
     json_object_set_new(jsevent, "blobId", jblobid);
 
     jblobid = json_null();
-    if (jmap_encode_rawdata_blobid('I', mboxid, imap_uid, NULL,
+    if (jmap_encode_rawdata_blobid('I', uniqueid, imap_uid, NULL,
                 NULL, "G", guid, &blobid)) {
         jblobid = json_string(buf_cstring(&blobid));
     }
@@ -2630,7 +2624,7 @@ struct getcalendarevents_rock {
     struct jmap_get *get;
     struct jmapical_ctx *jmapctx;
     int check_acl;
-    hash_table floatingtz_by_mboxid;
+    hash_table floatingtz_by_uniqueid;
     ptrarray_t malloced_fallbacktzs;
     struct jmapical_datetime overrides_before;
     struct jmapical_datetime overrides_after;
@@ -3052,14 +3046,14 @@ static void context_begin_cdata(struct jmapical_ctx *jmapctx,
                                 mbentry_t *mbentry,
                                 struct caldav_data *cdata)
 {
-    jmapctx->from_ical.cyrus_msg.mboxid = mbentry->uniqueid;
+    jmapctx->from_ical.cyrus_msg.uniqueid = mbentry->uniqueid;
     jmapctx->from_ical.cyrus_msg.uid = cdata->dav.imap_uid;
     jmapctx->from_ical.cyrus_msg.partid = NULL;
 }
 
 static void context_end_cdata(struct jmapical_ctx *jmapctx)
 {
-    jmapctx->from_ical.cyrus_msg.mboxid = NULL;
+    jmapctx->from_ical.cyrus_msg.uniqueid = NULL;
     jmapctx->from_ical.cyrus_msg.uid = 0;
     jmapctx->from_ical.cyrus_msg.partid = NULL;
 }
@@ -3303,7 +3297,7 @@ static int getcalendarevents_cb(void *vrock, struct caldav_jscal *jscal)
         if (mbname_isdeleted(rock->mbname)) {
             xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                     "mailbox is deleted, but ical_objs row exists",
-                    "mboxid=<%s> imap_uid=<%d>",
+                    "uniqueid=<%s> imap_uid=<%d>",
                     rock->mbentry->uniqueid, cdata->dav.imap_uid);
             return 0;
         }
@@ -3330,14 +3324,14 @@ static int getcalendarevents_cb(void *vrock, struct caldav_jscal *jscal)
 
     /* Lookup fall-back time zone on calendar collection */
     icaltimezone *floatingtz = hash_lookup(rock->mbentry->uniqueid,
-            &rock->floatingtz_by_mboxid);
+            &rock->floatingtz_by_uniqueid);
     if (!floatingtz) {
         int is_malloced = 0;
         floatingtz =
             calendarevent_get_floatingtz(rock->mbentry,
                     req->userid, &is_malloced);
         hash_insert(rock->mbentry->uniqueid, floatingtz,
-                &rock->floatingtz_by_mboxid);
+                &rock->floatingtz_by_uniqueid);
         if (is_malloced)
             ptrarray_append(&rock->malloced_fallbacktzs, floatingtz);
     }
@@ -3986,7 +3980,7 @@ static int jmap_calendarevent_get(struct jmap_req *req)
         .is_sharee = strcmp(req->accountid, req->userid)
     };
     construct_hashu64_table(&rock.cache_jsevents, 512, 0);
-    construct_hash_table(&rock.floatingtz_by_mboxid, 64, 0);
+    construct_hash_table(&rock.floatingtz_by_uniqueid, 64, 0);
 
     /* Parse request */
     jmap_get_parse(req, &parser, event_props, /*allow_null_ids*/1,
@@ -4115,7 +4109,7 @@ done:
     if (rock.ical_instances_by_recurid.size)
         free_hash_table(&rock.ical_instances_by_recurid, _icalcomponent_free_cb);
     free_hashu64_table(&rock.cache_jsevents, (void(*)(void*))json_decref);
-    free_hash_table(&rock.floatingtz_by_mboxid, NULL); /* values owned by libical */
+    free_hash_table(&rock.floatingtz_by_uniqueid, NULL); /* values owned by libical */
     if (ptrarray_size(&rock.malloced_fallbacktzs)) {
         icaltimezone *tz;
         while ((tz = ptrarray_pop(&rock.malloced_fallbacktzs))) {
@@ -5539,7 +5533,7 @@ static void setcalendarevents_update(jmap_req_t *req,
     if (mboxname_isdeletedmailbox(mbentry->name, NULL)) {
         xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                 "mailbox is deleted, but ical_objs row exists",
-                "mboxid=<%s> imap_uid=<%d>",
+                "uniqueid=<%s> imap_uid=<%d>",
                 mbentry->uniqueid, cdata->dav.imap_uid);
         r = IMAP_NOTFOUND;
         goto done;
@@ -5953,7 +5947,7 @@ static int setcalendarevents_destroy(jmap_req_t *req,
     if (mboxname_isdeletedmailbox(mbentry->name, NULL)) {
         xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                 "mailbox is deleted, but ical_objs row exists",
-                "mboxid=<%s> imap_uid=<%d>",
+                "uniqueid=<%s> imap_uid=<%d>",
                 mbentry->uniqueid, cdata->dav.imap_uid);
         r = IMAP_NOTFOUND;
         goto done;
@@ -7005,7 +6999,7 @@ static int eventquery_fastpath_cb(void *vrock, struct caldav_jscal *jscal)
     if (mboxname_isdeletedmailbox(mbentry->name, NULL)) {
         xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                 "mailbox is deleted, but ical_objs row exists",
-                "mboxid=<%s> imap_uid=<%d>",
+                "uniqueid=<%s> imap_uid=<%d>",
                 mbentry->uniqueid, jscal->cdata.dav.imap_uid);
         goto done;
     }
@@ -7626,7 +7620,7 @@ static void _calendarevent_copy(jmap_req_t *req,
     if (mboxname_isdeletedmailbox(mbentry->name, NULL)) {
         xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                 "mailbox is deleted, but ical_objs row exists",
-                "mboxid=<%s> imap_uid=<%d>",
+                "uniqueid=<%s> imap_uid=<%d>",
                 mbentry->uniqueid, cdata->dav.imap_uid);
         r = CYRUSDB_NOTFOUND;
         goto done;
@@ -8060,7 +8054,7 @@ static int jmap_calendarevent_participantreply(struct jmap_req *req)
     if (mboxname_isdeletedmailbox(mbentry->name, NULL)) {
         xsyslog(LOG_ERR, "corrupt ical_objs table detected: "
                 "mailbox is deleted, but ical_objs row exists",
-                "mboxid=<%s> imap_uid=<%d>",
+                "uniqueid=<%s> imap_uid=<%d>",
                 mbentry->uniqueid, cdata->dav.imap_uid);
         r = IMAP_NOTFOUND;
         goto done;
@@ -11709,7 +11703,7 @@ static int jmap_participantidentity_changes(struct jmap_req *req)
 }
 
 HIDDEN json_t *jmap_calendar_events_from_msg(jmap_req_t *req,
-                                             const char *mboxid,
+                                             const char *uniqueid,
                                              uint32_t uid,
                                              hash_table *icsbody_by_partid,
                                              unsigned allow_max_uids,
@@ -11793,7 +11787,7 @@ HIDDEN json_t *jmap_calendar_events_from_msg(jmap_req_t *req,
         }
 
         /* Convert to Event */
-        jmapctx->from_ical.cyrus_msg.mboxid = mboxid;
+        jmapctx->from_ical.cyrus_msg.uniqueid = uniqueid;
         jmapctx->from_ical.cyrus_msg.uid = uid;
         jmapctx->from_ical.cyrus_msg.partid = partid;
         jmapctx->from_ical.repair_broken_ical = 1;

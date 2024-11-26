@@ -11946,14 +11946,8 @@ static int jmap_contact_getblob(jmap_req_t *req, jmap_getblob_context_t *ctx)
         buf_setcstr(&ctx->content_type, ctx->accept_mime);
     }
 
-    const mbentry_t *mbentry;
-    if (ctx->from_accountid) {
-        mboxlist_lookup_by_uniqueid(mboxid, &freeme, NULL);
-        mbentry = freeme;
-    }
-    else {
-        mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
-    }
+    mboxlist_lookup_by_uniqueid(mboxid, &freeme, NULL);
+    const mbentry_t *mbentry = freeme;
     if (!jmap_hasrights_mbentry(req, mbentry, JACL_READITEMS)) {
         res = HTTP_NOT_FOUND;
         goto done;
@@ -12103,13 +12097,8 @@ static int jmap_contact_getblob(jmap_req_t *req, jmap_getblob_context_t *ctx)
     }
 
     const mbentry_t *mbentry;
-    if (ctx->from_accountid) {
-        mboxlist_lookup_by_uniqueid(mboxid, &freeme, NULL);
-        mbentry = freeme;
-    }
-    else {
-        mbentry = jmap_mbentry_by_uniqueid(req, mboxid);
-    }
+    mboxlist_lookup_by_uniqueid(mboxid, &freeme, NULL);
+    mbentry = freeme;
     if (!jmap_hasrights_mbentry(req, mbentry, JACL_READITEMS)) {
         res = HTTP_NOT_FOUND;
         goto done;

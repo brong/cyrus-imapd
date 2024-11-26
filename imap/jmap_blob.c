@@ -765,21 +765,23 @@ static int jmap_blob_lookup(jmap_req_t *req)
         const char *uniqueid = hash_iter_key(iter);
         ptrarray_t *getblobs = hash_iter_val(iter);
         struct mailbox *mbox = NULL;
-        const mbentry_t *mbentry = jmap_mbentry_by_uniqueid(req, uniqueid);
+        mbentry_t *mbentry = NULL;
         int r = 0;
+
+        mboxlist_lookup_by_uniqueid(uniqueid, &mbentry, NULL);
 
         /* Open mailbox */
         if (!jmap_hasrights_mbentry(req, mbentry, JACL_READITEMS)) {
-            r = IMAP_PERMISSION_DENIED;
+            mboxlist_entry_free(&mbentry);
+            continue;
         }
-        else {
-            r = mailbox_open_irl(mbentry->name, &mbox);
-            if (r) {
-                syslog(LOG_ERR, "jmap_blob_get: can't open mailbox %s: %s",
-                       mbentry->name, error_message(r));
-            }
+
+        r = mailbox_open_irl(mbentry->name, &mbox);
+        if (r) {
+            syslog(LOG_ERR, "jmap_blob_get: can't open mailbox %s: %s",
+                   mbentry->name, error_message(r));
+            continue;
         }
-        if (r) continue;
 
         // these types both want to know the last item of the name
         mbname_t *mbname = NULL;
@@ -886,6 +888,7 @@ static int jmap_blob_lookup(jmap_req_t *req)
 
         if (caldav_db) caldav_close(caldav_db);
         if (carddav_db) carddav_close(carddav_db);
+        mboxlist_entry_free(&mbentry);
         mbname_free(&mbname);
         mailbox_close(&mbox);
     }
