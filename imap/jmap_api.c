@@ -1073,10 +1073,10 @@ void jmap_add_id(jmap_req_t *req, const char *creation_id, const char *id)
     hash_insert(creation_id, xstrdup(id), req->created_ids);
 }
 
-HIDDEN int jmap_openmbox_by_mailboxid(jmap_req_t *req, const char *id,
+HIDDEN int jmap_openmbox_by_uniqueid(jmap_req_t *req, const char *uniqueid,
                                      struct mailbox **mboxp, int rw)
 {
-    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, id);
+    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, uniqueid);
 
     if (mbentry)
         return rw ? mailbox_open_iwl(mbentry->name, mboxp)
@@ -3220,7 +3220,7 @@ EXPORTED mbentry_t *jmap_mbentry_by_mailboxid_copy(jmap_req_t *req, const char *
     return mboxlist_entry_copy(mbentry);
 }
 
-EXPORTED const char *jmap_mailboxid_from_mbentry(jmap_req_t *req, mbentry_t *mbentry)
+EXPORTED const char *jmap_mailboxid_mbentry(jmap_req_t *req, const mbentry_t *mbentry)
 {
     return req ? mbentry->uniqueid : NULL;
 }

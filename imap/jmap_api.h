@@ -276,7 +276,7 @@ extern void jmap_admin_capabilities(json_t *account_capabilities);
 extern void jmap_accounts(json_t *accounts, json_t *primary_accounts);
 
 /* Request-scoped mailbox cache */
-extern int jmap_openmbox_by_uniqueid(jmap_req_t *req, const char *id,
+extern int jmap_openmbox_by_uniqueid(jmap_req_t *req, const char *uniqueid,
                                      struct mailbox **mboxp, int rw);
 extern int jmap_mboxlist_lookup(const char *name,
                                 mbentry_t **entryptr, struct txn **tid);

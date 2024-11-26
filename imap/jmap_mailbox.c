@@ -3364,7 +3364,7 @@ static int _mboxset_state_mboxlist_cb(const mbentry_t *mbentry, void *rock)
     struct mboxset_state *state = rock;
 
     if (mbtype_isa(mbentry->mbtype) == MBTYPE_EMAIL) {
-        hash_insert(mbentry->name, jmap_mailboxid_mbentry(state->req, mbentry), state->id_by_imapname);
+        hash_insert(mbentry->name, xstrdup(jmap_mailboxid_mbentry(state->req, mbentry)), state->id_by_imapname);
     }
     return 0;
 }
