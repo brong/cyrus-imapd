@@ -3201,28 +3201,42 @@ static const mbentry_t *_mbentry_by_uniqueid(jmap_req_t *req,
     return mbentry;
 }
 
+static const mbentry_t *_mbentry_by_number(jmap_req_t *req, int num)
+{
+    return _mbentry_by_uniqueid(req, conversations_folder_uniqueid(req->cstate, num), 0);
+}
+
 EXPORTED const mbentry_t *jmap_mbentry_by_mailboxid(jmap_req_t *req,
                                                    const char *id)
 {
+    if (id[0] == 'm')
+        return _mbentry_by_number(req, atoi(id+1));
     return _mbentry_by_uniqueid(req, id, 1/*scope*/);
 }
 
 EXPORTED const mbentry_t *jmap_mbentry_by_mailboxid_all(jmap_req_t *req,
                                                        const char *id)
 {
+    if (id[0] == 'm')
+        return _mbentry_by_number(req, atoi(id+1));
     return _mbentry_by_uniqueid(req, id, 0/*scope*/);
 }
 
 EXPORTED mbentry_t *jmap_mbentry_by_mailboxid_copy(jmap_req_t *req, const char *id)
 {
-    const mbentry_t *mbentry = _mbentry_by_uniqueid(req, id, 1/*scope*/);
+    const mbentry_t *mbentry = jmap_mbentry_by_mailboxid(req, id);
     if (!mbentry) return NULL;
     return mboxlist_entry_copy(mbentry);
 }
 
 EXPORTED const char *jmap_mailboxid_mbentry(jmap_req_t *req, const mbentry_t *mbentry)
 {
-    return req ? mbentry->uniqueid : NULL;
+    static char item[20];
+    int num = conversation_folder_number(req->cstate, CONV_FOLDER_KEY_MBE(req->cstate, mbentry), 1);
+    syslog(LOG_ERR, "JMAP_MAILBOXID: %s / %s => %d", mbentry->name, mbentry->uniqueid, num);
+    if (num < 0) return NULL;
+    snprintf(item, 20, "m%d", num);
+    return item;
 }
 
 static void _free_mbentry(void *rock)
