@@ -52,6 +52,12 @@
 #include <syslog.h>
 #include <time.h>
 
+// for log_deadlock
+#include <stdio.h>
+#include <jansson.h>
+#include "libconfig.h"
+#include "util.h"
+
 EXPORTED const char lock_method_desc[] = "fcntl";
 
 EXPORTED double debug_locks_longer_than = 0.0;
@@ -130,6 +136,88 @@ EXPORTED int lock_reopen_ex(int fd, const char *filename,
     }
 }
 
+static void log_deadlock(int fd, struct flock *fl, const char *fname)
+{
+    // Start timer.
+    struct timespec clock[2] = { 0 };
+    clock_gettime(CLOCK_REALTIME, &clock[0]);
+
+    struct flock myfl = {
+        .l_type = fl->l_type,
+        .l_whence = fl->l_whence,
+        .l_start = fl->l_start,
+        .l_len = fl->l_len,
+    };
+
+    // Get the PID of other process, ignore OFD locks.
+    int r = fcntl(fd, F_GETLK, &myfl);
+    if (r == -1 || fl->l_pid == -1) return;
+
+    FILE *fp_self = NULL;
+    pid_t pid_self = getpid();
+    json_t *jlocks_self = NULL;
+
+    FILE *fp_other = NULL;
+    pid_t pid_other = myfl.l_pid;
+    json_t *jlocks_other = NULL;
+
+    char cmd[1024];
+
+    // Gather locks held by other process.
+    snprintf(cmd, 1024, "lslocks -J -p %d --output-all", pid_other);
+    fp_other = popen(cmd, "r");
+    if (!fp_other) goto done;
+
+    // Gather locks held by our process.
+    snprintf(cmd, 1024, "lslocks -J -p %d --output-all", pid_self);
+    fp_self = popen(cmd, "r");
+    if (!fp_self) goto done;
+
+    // Stop timer.
+    clock_gettime(CLOCK_REALTIME, &clock[1]);
+
+    // Decode JSON-encoded locks.
+    jlocks_self = json_loadf(fp_self, 0, NULL);
+    if (!jlocks_self) goto done;
+    jlocks_other = json_loadf(fp_other, 0, NULL);
+    if (!jlocks_other) goto done;
+
+    // Close the pipes.
+    pclose(fp_self);
+    fp_self = NULL;
+    pclose(fp_other);
+    fp_other = NULL;
+
+    // Combine the deadlock evidence into a JSON object.
+    json_t *jlog = json_object();
+    json_object_set_new(jlog, "fd", json_integer(fd));
+    json_object_set_new(jlog, "path", fname ? json_string(fname) : json_null());
+    json_object_set_new(jlog, "pid", json_integer(pid_self));
+    json_object_set(jlog, "self", jlocks_self);
+    json_object_set(jlog, "other", jlocks_other);
+    json_t *jclocks = json_array();
+    for (size_t i = 0; i < sizeof(clock) / sizeof(clock[0]); i++) {
+        char buf[64];
+        snprintf(buf, 64, "%ld.%09ld", clock[i].tv_sec, clock[i].tv_nsec);
+        json_array_append_new(jclocks, json_string(buf));
+    }
+    json_object_set_new(jlog, "clocks", jclocks);
+
+    // Log the JSON evidence.
+    char *logstr = json_dumps(jlog, JSON_COMPACT | JSON_ENSURE_ASCII);
+    xsyslog_ev(LOG_ERR, "LOCKERROR: detected deadlock", lf_s("json", logstr));
+
+    // Clean up.
+    free(logstr);
+    json_decref(jlog);
+
+done:
+    if (fp_self) pclose(fp_self);
+    if (fp_other) pclose(fp_other);
+    json_decref(jlocks_self);
+    json_decref(jlocks_other);
+}
+
 /*
  * Obtain a lock on 'fd'.  The lock is exclusive if 'exclusive'
  * is true, otherwise shared.  Normally blocks until a lock is
@@ -168,6 +256,10 @@ EXPORTED int lock_setlock(int fd, int exclusive, int nonblock,
             return 0;
         }
         if (errno == EINTR) continue;
+        if (errno == EDEADLK && config_getswitch(IMAPOPT_DEBUG_DEADLOCK)) {
+            log_deadlock(fd, &fl, filename);
+            errno = EDEADLK;
+        }
         return -1;
     }
 }
