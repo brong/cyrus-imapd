@@ -221,7 +221,8 @@ dist_sbin_SCRIPTS += \
 
 noinst_PROGRAMS += \
     imap/message_test \
-    imap/search_test
+    imap/search_test \
+    imap/deadlock_test
 
 if USE_SQUAT
 noinst_PROGRAMS += imap/squat_dump
@@ -1210,6 +1211,9 @@ imap_mbtool_LDADD = $(LD_UTILITY_ADD)
 
 imap_message_test_SOURCES = imap/message_test.c imap/mutex_fake.c
 imap_message_test_LDADD = $(LD_UTILITY_ADD)
+
+imap_deadlock_test_SOURCES = imap/deadlock_test.c imap/mutex_fake.c
+imap_deadlock_test_LDADD = $(LD_UTILITY_ADD)
 
 imap_mupdate_SOURCES = \
     imap/mupdate.c \
