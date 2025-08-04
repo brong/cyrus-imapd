@@ -105,7 +105,7 @@
 
 struct conversations_open {
     struct conversations_state s;
-    struct mboxlock *local_namespacelock;
+    user_nslock_t *user_nslock;
     struct conversations_open *next;
 };
 
@@ -396,13 +396,13 @@ EXPORTED int conversations_open_path_version(const char *fname,
     open_conversations = open;
 
     /* first ensure that the usernamespace is locked */
-    int haslock = user_isnamespacelocked(userid);
+    int haslock = user_nslock_islocked(userid);
     if (haslock) {
         if (!shared) assert(haslock != LOCK_SHARED);
     }
     else {
         int locktype = shared ? LOCK_SHARED : LOCK_EXCLUSIVE;
-        open->local_namespacelock = user_namespacelock_full(userid, locktype);
+        open->user_nslock = user_nslock_full1(userid, locktype);
     }
 
     /* set version -
@@ -576,8 +576,7 @@ static void _conv_remove(struct conversations_state *state)
                 strarray_free(cur->s.folders);
             if (cur->s.altrep)
                 strarray_free(cur->s.altrep);
-            if (cur->local_namespacelock)
-                mboxname_release(&cur->local_namespacelock);
+            user_nslock_release(&cur->user_nslock);
             free(cur);
             return;
         }
@@ -1905,9 +1904,9 @@ EXPORTED void conversation_update_thread(conversation_t *conv,
 
     message_guid_copy(&thread->guid, guid);
     // these should always be the same for all copies of an email!
-    // but if not (e.g. IMAP append) we want the earliest non-zero value
-    if (!thread->nano_internaldate ||
-        thread->nano_internaldate > nano_internaldate)
+    // but if not (replacing a previously expunged email) then we want
+    // the most recent.
+    if (thread->nano_internaldate < nano_internaldate)
         thread->nano_internaldate = nano_internaldate;
     // the same email may exist multiple times in a folder or in multiple
     // folders with different createdmodseq.  We want to track the earliest
@@ -2445,7 +2444,7 @@ static int conversations_set_guid(struct conversations_state *state,
                                    record->internal_flags,
                                    nano_internaldate,
                                    add);
-    if (!r) {
+    if (!r && UTIME_SAFE_NSEC(record->internaldate.tv_nsec)) {
         struct buf key = BUF_INITIALIZER;
 
         /* Build J key */
@@ -2458,7 +2457,7 @@ static int conversations_set_guid(struct conversations_state *state,
             r = cyrusdb_delete(state->db, buf_base(&key), buf_len(&key),
                                &state->txn, /*force*/1);
         }
-        else {
+        else if (!(record->internal_flags & FLAG_INTERNAL_EXPUNGED)) {
             /* Add J record */
             r = cyrusdb_store(state->db, buf_base(&key), buf_len(&key),
                               guidrep, strlen(guidrep), &state->txn);
@@ -2735,10 +2734,12 @@ EXPORTED int conversations_update_record(struct conversations_state *cstate,
         free(env);
     }
 
-
+    uint64_t nano_internaldate = TIMESPEC_TO_NANOSEC(&record->internaldate);
+    if (record->internal_flags & FLAG_INTERNAL_EXPUNGED)
+        nano_internaldate = 0; // don't update if an expunged record comes along!
     conversation_update_thread(conv,
                                &record->guid,
-                               TIMESPEC_TO_NANOSEC(&record->internaldate),
+                               nano_internaldate,
                                record->createdmodseq,
                                delta_exists);
 
@@ -3467,16 +3468,65 @@ EXPORTED int conversations_jmapid_guidrep_lookup(struct conversations_state *sta
     return 0;
 }
 
+/* find if there's any non-expunged message with the same GUID and use its internaldate */
+static int find_internaldate_cb(const conv_guidrec_t *rec, void *rock)
+{
+    struct timespec *internaldate = (struct timespec *)rock;
+
+    // only full messages
+    if (rec->part) return 0;
+
+    // can only find timestamps on v4 or above
+    if (rec->version < 4) return 0;
+
+    // ignore expunged messages, we want to be able to destroy and recreate
+    // without waiting a week
+    if (rec->internal_flags & FLAG_INTERNAL_EXPUNGED) return 0;
+
+    // found a duplicate email; use its internaldate if it has one
+    struct timespec this;
+    TIMESPEC_FROM_NANOSEC(&this, rec->nano_internaldate);
+    if (!UTIME_SAFE_NSEC(this.tv_nsec)) return 0;
+
+    // always keep the highest internaldate; this matches the thread logic and also means that
+    // a reconstruct will fix all records to match the highest if we get out of sync
+    if (!UTIME_SAFE_NSEC(internaldate->tv_nsec) || TIMESPEC_TO_NANOSEC(internaldate) < rec->nano_internaldate)
+        *internaldate = this;
+
+    return 0;
+}
+
 EXPORTED void conversations_adjust_internaldate(struct conversations_state *cstate,
-                                                const char *my_guid,
+                                                struct message_guid *guid,
                                                 struct timespec *internaldate)
 {
+
+    if (!cstate) return;  // can't look up anything
+
+    char my_guid[2*MESSAGE_GUID_SIZE+1];
+    strcpy(my_guid, message_guid_encode(guid));
+    // is there an existing timestamp for this GUID?
+    struct timespec existing = { 0, 0 };
+    conversations_guid_foreach(cstate, my_guid, find_internaldate_cb, &existing);
+    if (UTIME_SAFE_NSEC(existing.tv_nsec)) {
+        *internaldate = existing;
+        return;
+    }
+
     struct buf jidrep = BUF_INITIALIZER;
     uint64_t count = 0;
+    char existing_guid[2*MESSAGE_GUID_SIZE+1];
 
     // check for a JMAPID (internaldate) clash, and adjust nanosec as needed
     do {
-        char existing_guid[2*MESSAGE_GUID_SIZE+1];
+        if (!UTIME_SAFE_NSEC(internaldate->tv_nsec)) {
+            // assign internaldate.nsec in a deterministic manner -
+            // use the first 29 bits of GUID
+            // (0x1FFFFFFF < 999999999 nanoseconds)
+            internaldate->tv_nsec = *((uint32_t *) guid->value) >> 3;
+            // and if THAT's no good, start at 1
+            if (!UTIME_SAFE_NSEC(internaldate->tv_nsec)) internaldate->tv_nsec = 1;
+        }
 
         buf_reset(&jidrep);
         NANOSEC_TO_JMAPID(&jidrep, TIMESPEC_TO_NANOSEC(internaldate));
@@ -3484,8 +3534,9 @@ EXPORTED void conversations_adjust_internaldate(struct conversations_state *csta
                                                     buf_cstring(&jidrep),
                                                     existing_guid);
         if (r || !strcmp(my_guid, existing_guid)) {
-            // JMAP ID doesn't exist or it references our GUID
-            break;
+            // nothing found or self, we're good
+            buf_free(&jidrep);
+            return;
         }
 
         xsyslog(LOG_INFO, "IOERROR: JMAPID conflict during append,"
@@ -3494,12 +3545,13 @@ EXPORTED void conversations_adjust_internaldate(struct conversations_state *csta
                 buf_cstring(&jidrep), my_guid, existing_guid);
 
         // try the next nanosecond */
-        internaldate->tv_nsec = (internaldate->tv_nsec + 1) % 1000000000;
+        internaldate->tv_nsec++;
 
         // in the unlikely event that we reach the limit below, we're screwed
-    } while (++count < 1000000000);
+    } while (++count < 1000);
 
-    buf_free(&jidrep);
+    // couldn't fine a valid ID in a thousand tries? something is badly wrong. 
+    abort();
 }
 
 EXPORTED int conversations_enable_compactids(struct conversations_state *state,

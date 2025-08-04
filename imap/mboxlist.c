@@ -1270,7 +1270,7 @@ static int mboxlist_update_racl(const char *dbname, const mbentry_t *oldmbentry,
 static void assert_namespacelocked(const char *mboxname)
 {
     char *userid = mboxname_to_userid(mboxname);
-    assert(user_isnamespacelocked(userid));
+    assert(user_nslock_islocked(userid));
     free(userid);
 }
 
@@ -1537,9 +1537,9 @@ EXPORTED int mboxlist_delete(const mbentry_t *mbentry)
 
 EXPORTED int mboxlist_deletelock(const mbentry_t *mbentry)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(mbentry->name);
     int r = mboxlist_delete(mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -1598,9 +1598,9 @@ EXPORTED int mboxlist_update_full(const mbentry_t *mbentry, int localonly, int s
 
 EXPORTED int mboxlist_updatelock(const mbentry_t *mbentry, int localonly)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(mbentry->name);
     int r = mboxlist_update(mbentry, localonly);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -2245,13 +2245,11 @@ EXPORTED int mboxlist_createmailboxlock(const mbentry_t *mbentry,
                                         const struct auth_state *auth_state,
                                         unsigned flags, struct mailbox **mboxptr)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
-
+    user_nslock_t *user_nslock = user_nslock_lockmb(mbentry->name);
     int r = mboxlist_createmailbox(mbentry, options, highestmodseq,
                                    isadmin, userid, auth_state,
                                    flags, mboxptr);
-
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -2276,9 +2274,9 @@ EXPORTED int mboxlist_insertremote(mbentry_t *mbentry,
     }
 
     /* database put */
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(mbentry->name);
     r = mboxlist_update_entry(mbentry->name, mbentry, txn);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     switch (r) {
     case CYRUSDB_OK:
@@ -2307,7 +2305,7 @@ EXPORTED int mboxlist_deleteremote(const char *name, struct txn **in_tid)
     struct txn *lcl_tid = NULL;
     mbentry_t *mbentry = NULL;
     char *dbname = mboxname_to_dbname(name);
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(name);
 
     if(in_tid) {
         tid = in_tid;
@@ -2367,7 +2365,7 @@ EXPORTED int mboxlist_deleteremote(const char *name, struct txn **in_tid)
         cyrusdb_abort(mbdb, *tid);
     }
     mboxlist_entry_free(&mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -2506,6 +2504,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                     int flags)
 {
     mbentry_t *mbentry = NULL;
+    mbentry_t *newmbentry = NULL;
     int r = 0;
     long myrights;
     struct mailbox *mailbox = NULL;
@@ -2565,7 +2564,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
     if (mbentry->mbtype & MBTYPE_INTERMEDIATE) {
         // make it deleted and mark it done!
         if (!mboxname_isdeletedmailbox(name, NULL)) {
-            mbentry_t *newmbentry = mboxlist_entry_copy(mbentry);
+            newmbentry = mboxlist_entry_copy(mbentry);
             newmbentry->mbtype |= MBTYPE_DELETED;
             if (!silent) {
                 newmbentry->foldermodseq = mboxname_nextmodseq(newmbentry->name, newmbentry->foldermodseq,
@@ -2578,7 +2577,6 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                  "mailbox=<%s> error=<%s>",
                                  name, cyrusdb_strerror(r));
             }
-            mboxlist_entry_free(&newmbentry);
         }
         else {
             r = mboxlist_update_entry_full(name, NULL, 0, silent);
@@ -2641,12 +2639,18 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
     }
     if (r && !force) goto done;
 
+    int haschildren = mboxlist_haschildren(name);
+    newmbentry = mboxlist_entry_copy(mbentry);
+    newmbentry->mbtype |= (haschildren ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED);
+
     /* delete underlying mailbox */
     if (!isremote && mailbox) {
         /* only on a real delete do we delete from the remote end as well */
         sync_log_unmailbox(mailbox_name(mailbox));
         mboxevent_extract_mailbox(mboxevent, mailbox);
         mboxevent_set_access(mboxevent, NULL, NULL, userid, mailbox_name(mailbox), 1);
+
+        newmbentry->foldermodseq = mailbox_modseq_dirty(mailbox);
 
         r = mailbox_delete(&mailbox);
         /* abort event notification */
@@ -2656,17 +2660,6 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
 
     if (!isremote && !isentirely && !mboxname_isdeletedmailbox(name, NULL)) {
         /* store a DELETED marker */
-        int haschildren = mboxlist_haschildren(name);
-        mbentry_t *newmbentry = mboxlist_entry_create();
-        newmbentry->name = xstrdupnull(name);
-        newmbentry->mbtype = mbentry->mbtype |
-            (haschildren ? MBTYPE_INTERMEDIATE : MBTYPE_DELETED);
-        if (mailbox) {
-            newmbentry->uniqueid = xstrdupnull(mailbox_uniqueid(mailbox));
-            newmbentry->uidvalidity = mailbox->i.uidvalidity;
-            newmbentry->createdmodseq = mailbox->i.createdmodseq;
-            newmbentry->foldermodseq = mailbox_modseq_dirty(mailbox);
-        }
         r = mboxlist_update_full(newmbentry, /*localonly*/1, silent);
 
         /* any other updated intermediates get the same modseq */
@@ -2681,7 +2674,6 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
                                mbentry->mbtype, MBOXMODSEQ_ISDELETE);
         }
 
-        mboxlist_entry_free(&newmbentry);
     }
     else {
         /* delete entry (including DELETED.* mailboxes, no need
@@ -2706,6 +2698,7 @@ EXPORTED int mboxlist_deletemailbox(const char *name, int isadmin,
     }
 
  done:
+    mboxlist_entry_free(&newmbentry);
     mailbox_close(&mailbox);
     mboxlist_entry_free(&mbentry);
     mbname_free(&mbname);
@@ -2719,11 +2712,9 @@ EXPORTED int mboxlist_deletemailboxlock(const char *name, int isadmin,
                                     struct mboxevent *mboxevent,
                                     int flags)
 {
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
-
+    user_nslock_t *user_nslock = user_nslock_lockmb(name);
     int r = mboxlist_deletemailbox(name, isadmin, userid, auth_state, mboxevent, flags);
-
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -3449,7 +3440,7 @@ EXPORTED int mboxlist_setacl(const struct namespace *namespace __attribute__((un
 
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(name);
 
     // not "anyone" or a group - do some username normalisation
     if (!isanyone && strncmp(identifier, "group:", 6)) {
@@ -3621,7 +3612,7 @@ EXPORTED int mboxlist_setacl(const struct namespace *namespace __attribute__((un
     free(newacl);
     mboxlist_entry_free(&mbentry);
     mbname_free(&idname);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -3631,7 +3622,7 @@ EXPORTED int mboxlist_updateacl_raw(const char *name, const char *newacl)
 {
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(name);
 
     struct mailbox *mailbox = NULL;
     modseq_t foldermodseq = 0;
@@ -3646,7 +3637,7 @@ EXPORTED int mboxlist_updateacl_raw(const char *name, const char *newacl)
 
     if (!r) r = mboxlist_setacls(name, newacl, foldermodseq, /*silent*/0);
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     return r;
 }
 
@@ -3666,7 +3657,7 @@ mboxlist_setacls(const char *name, const char *newacl, modseq_t foldermodseq, in
 {
     // the namespacelock will protect us from all races on the local mailboxes.db
     // so we can just read away and know it won't change under us.
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(name);
+    user_nslock_t *user_nslock = user_nslock_lockmb(name);
     mbentry_t *mbentry = NULL;
     int r;
 
@@ -3726,7 +3717,7 @@ mboxlist_setacls(const char *name, const char *newacl, modseq_t foldermodseq, in
 
 done:
     mboxlist_entry_free(&mbentry);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     return r;
 }
@@ -5855,9 +5846,9 @@ static void _upgrade_cb(const char *key __attribute__((unused)),
         mbentry_t *mbentry = (mbentry_t *) ptrarray_nth(pa, idx);
 
         if (!*urock->r) {
-            struct mboxlock *namespacelock = mboxname_usernamespacelock(mbentry->name);
+            user_nslock_t *user_nslock = user_nslock_lockmb(mbentry->name);
             *urock->r = mboxlist_update_entry(mbentry->name, mbentry, urock->tid);
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
         }
 
         mboxlist_entry_free(&mbentry);

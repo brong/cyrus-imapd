@@ -106,6 +106,7 @@
 #include "prometheus.h"
 #include "quota.h"
 #include "seen.h"
+#include "sieve_db.h"
 #include "slowio.h"
 #include "statuscache.h"
 #include "sync_log.h"
@@ -256,7 +257,8 @@ struct appendstage {
     struct stagemsg *stage;
     FILE *f;
     strarray_t flags;
-    struct timespec internaldate;
+    struct timespec *internaldate;
+    struct timespec ts;
     int binary;
     struct entryattlist *annotations;
 };
@@ -568,6 +570,7 @@ static void cmd_status(char *tag, char *name);
 static void cmd_namespace(char* tag);
 static void cmd_mupdatepush(char *tag, char *name);
 static void cmd_id(char* tag);
+static void cmd_upgradesieve(char *tag, char *name);
 
 static void cmd_idle(char* tag);
 
@@ -2681,6 +2684,15 @@ static void cmdloop(void)
                 cmd_undump(tag.s, arg1.s);
                 /* XXX prometheus_increment(CYRUS_IMAP_UNDUMP_TOTAL); */
             }
+            else if (!strcmp(cmd.s, "Upgradesieve")) {
+                if (!imapd_userisadmin) goto adminsonly;
+                if (readonly) goto noreadonly;
+                if (c != ' ') goto missingargs;
+                c = getastring(imapd_in, imapd_out, &arg1);
+                if (!IS_EOL(c, imapd_in)) goto extraargs;
+
+                cmd_upgradesieve(tag.s, arg1.s);
+            }
 #ifdef HAVE_SSL
             else if (!strcmp(cmd.s, "Urlfetch")) {
                 if (c != ' ') goto missingargs;
@@ -4362,9 +4374,6 @@ static int cmd_append(char *tag, char *name, const char *cur_name,
         curstage = xzmalloc(sizeof(*curstage));
         ptrarray_push(&stages, curstage);
 
-        /* Initialize the internaldate to "now" */
-        clock_gettime(CLOCK_REALTIME, &curstage->internaldate);
-
         /* Set limit on the total number of bytes allowed for mailbox+append-opts */
         maxargssize_mark = prot_bytes_in(imapd_in) + (maxargssize - strlen(name));
 
@@ -4404,12 +4413,14 @@ static int cmd_append(char *tag, char *name, const char *cur_name,
         /* Parse internaldate */
         if (c == '\"' && !arg.s[0]) {
             prot_ungetc(c, imapd_in);
-            c = getdatetime(&(curstage->internaldate.tv_sec));
+            c = getdatetime(&(curstage->ts.tv_sec));
             if (c != ' ') {
                 parseerr = "Invalid date-time in Append command";
                 r = IMAP_PROTOCOL_ERROR;
                 goto done;
             }
+            curstage->ts.tv_nsec = 0;
+            curstage->internaldate = &curstage->ts;
             c = getword(imapd_in, &arg);
         }
 
@@ -4574,9 +4585,8 @@ static int cmd_append(char *tag, char *name, const char *cur_name,
             }
             if (!r) {
                 struct append_metadata meta = {
-                    &curstage->internaldate, /*savedate*/ 0, /*cmodseq*/ 0,
-                    &curstage->flags, &curstage->annotations, /*nolink*/ 0,
-                    { replace_uid, replace_uid ? cur_name : NULL }
+                    curstage->internaldate, /*savedate*/ 0, /*cmodseq*/ 0,
+                    &curstage->flags, &curstage->annotations, /*nolink*/ 0
                 };
                 r = append_fromstage_full(&appendstate, &body,
                                           curstage->stage, &meta);
@@ -6248,7 +6258,7 @@ static void cmd_search(const char *tag, const char *cmd)
     char mytime[100];
     int usinguid = 0, n = 0;
     int state = GETSEARCH_RETURN;
-    struct mboxlock *namespacelock = NULL;
+    user_nslock_t *user_nslock = NULL;
 
     if (backend_current) {
         /* remote mailbox */
@@ -6336,7 +6346,7 @@ static void cmd_search(const char *tag, const char *cmd)
     // hold a lock across potentially multiple mailboxes
     // NOTE: we have to exclusively lock, because index_check will
     // write RECENT data, *sigh*
-    if (imapd_index) namespacelock = mboxname_usernamespacelock(index_mboxname(imapd_index));
+    if (imapd_index) user_nslock = user_nslock_lockmb(index_mboxname(imapd_index));
 
     // this refreshes the index, we may be looking at it in our search
     imapd_check(NULL, 0);
@@ -6487,7 +6497,7 @@ static void cmd_search(const char *tag, const char *cmd)
         condstore_enabled("SEARCH MODSEQ");
 
     // release before responding
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     int r = cmd_cancelled(/*insearch*/1);
     if (!r) {
@@ -6502,7 +6512,7 @@ static void cmd_search(const char *tag, const char *cmd)
 
   done:
     freesearchargs(searchargs);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 }
 
 /*
@@ -6836,21 +6846,7 @@ static void cmd_copy(char *tag, char *sequence, char *name, int usinguid, int is
     if (!r) {
         struct progress_rock prock = { &progress_cb, tag, time(0), 0 };
 
-        // make sure we get locks in order!
-        struct mboxlock *oldnamespacelock = NULL;
-        struct mboxlock *newnamespacelock = NULL;
-
-        const char *oldmailboxname = index_mboxname(imapd_index);
-        const char *newmailboxname = intname;
-
-        if (strcmpsafe(oldmailboxname, newmailboxname) < 0) {
-            oldnamespacelock = mboxname_usernamespacelock(oldmailboxname);
-            newnamespacelock = mboxname_usernamespacelock(newmailboxname);
-        }
-        else {
-            newnamespacelock = mboxname_usernamespacelock(newmailboxname);
-            oldnamespacelock = mboxname_usernamespacelock(oldmailboxname);
-        }
+        user_nslock_t *user_nslock = user_nslock_fullmb(index_mboxname(imapd_index), intname, LOCK_EXCLUSIVE);
 
         r = index_copy(imapd_index, sequence, usinguid, intname,
                        &copyuid, !config_getswitch(IMAPOPT_SINGLEINSTANCESTORE),
@@ -6858,8 +6854,7 @@ static void cmd_copy(char *tag, char *sequence, char *name, int usinguid, int is
                        (imapd_userisadmin || imapd_userisproxyadmin), ismove,
                        ignorequota, &prock);
 
-        mboxname_release(&oldnamespacelock);
-        mboxname_release(&newnamespacelock);
+        user_nslock_release(&user_nslock);
     }
 
     if (ismove && copyuid && !r) {
@@ -7001,7 +6996,7 @@ static void cmd_create(char *tag, char *name, struct dlist *extargs, int localon
     if (mbname_userid(mbname) && !strarray_size(mbname_boxes(mbname)))
         is_inbox = 1;
 
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbname_intname(mbname));
+    user_nslock_t *user_nslock = user_nslock_lock(mbname_userid(mbname));
 
     const char *type = NULL;
 
@@ -7136,7 +7131,7 @@ static void cmd_create(char *tag, char *name, struct dlist *extargs, int localon
                     }
 
                     // don't hold the lock locally, we're proxying
-                    mboxname_release(&namespacelock);
+                    user_nslock_release(&user_nslock);
 
                     struct backend *s_conn = NULL;
 
@@ -7442,7 +7437,7 @@ localcreate:
 
 done:
     mailbox_close(&mailbox);
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mboxlist_entry_free(&parent);
     buf_free(&specialuse);
     mbname_free(&mbname);
@@ -7498,7 +7493,7 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
     }
 
     mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbname_intname(mbname));
+    user_nslock_t *user_nslock = user_nslock_lock(mbname_userid(mbname));
 
     r = mlookup(NULL, NULL, mbname_intname(mbname), &mbentry);
 
@@ -7508,7 +7503,7 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
         int res;
 
         // don't hold the lock locally, we're proxying
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
 
         if (supports_referrals) {
             imapd_refer(tag, mbentry->server, name);
@@ -7606,7 +7601,7 @@ static void cmd_delete(char *tag, char *name, int localonly, int force)
                            /* add */ 0, /* force */ 1, /* notify? */ 0, /*silent*/1);
     }
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
 
     imapd_check(NULL, 0);
 
@@ -7830,17 +7825,7 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location, 
     olduser = mboxname_to_userid(oldmailboxname);
     newuser = mboxname_to_userid(newmailboxname);
 
-    struct mboxlock *oldnamespacelock = NULL;
-    struct mboxlock *newnamespacelock = NULL;
-
-    if (strcmpsafe(oldmailboxname, newmailboxname) < 0) {
-        oldnamespacelock = mboxname_usernamespacelock(oldmailboxname);
-        newnamespacelock = mboxname_usernamespacelock(newmailboxname);
-    }
-    else {
-        newnamespacelock = mboxname_usernamespacelock(newmailboxname);
-        oldnamespacelock = mboxname_usernamespacelock(oldmailboxname);
-    }
+    user_nslock_t *user_nslock = user_nslock_full2(olduser, newuser, LOCK_EXCLUSIVE);
 
     /* Keep temporary copy: master is trashed */
     strcpy(oldmailboxname2, oldmailboxname);
@@ -7877,8 +7862,7 @@ static void cmd_rename(char *tag, char *oldname, char *newname, char *location, 
         int res;
 
         // don't hold the locks locally, we're proxying
-        mboxname_release(&oldnamespacelock);
-        mboxname_release(&newnamespacelock);
+        user_nslock_release(&user_nslock);
 
         s = proxy_findserver(mbentry->server, &imap_protocol,
                              proxy_userid, &backend_cached,
@@ -8284,8 +8268,7 @@ respond:
     }
 
 done:
-    mboxname_release(&oldnamespacelock);
-    mboxname_release(&newnamespacelock);
+    user_nslock_release(&user_nslock);
     // rename acls after the lock is dropped
     if (!r && rename_user)
         user_sharee_renameacls(&imapd_namespace, olduser, newuser);
@@ -9025,11 +9008,11 @@ static void cmd_setacl(char *tag, const char *name,
     int r;
     mbentry_t *mbentry = NULL;
 
-    char *intname = mboxname_from_external(name, &imapd_namespace, imapd_userid);
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(intname);
+    mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
+    user_nslock_t *user_nslock = user_nslock_lock(mbname_userid(mbname));
 
     /* is it remote? */
-    r = mlookup(tag, name, intname, &mbentry);
+    r = mlookup(tag, name, mbname_intname(mbname), &mbentry);
     if (r == IMAP_MAILBOX_MOVED) goto done;
 
     if (!config_getswitch(IMAPOPT_ALLOWSETACL))
@@ -9041,7 +9024,7 @@ static void cmd_setacl(char *tag, const char *name,
         int res;
 
         // don't hold the lock locally, we're calling remote
-        mboxname_release(&namespacelock);
+        user_nslock_release(&user_nslock);
 
         s = proxy_findserver(mbentry->server, &imap_protocol,
                              proxy_userid, &backend_cached,
@@ -9106,7 +9089,7 @@ static void cmd_setacl(char *tag, const char *name,
             }
         }
 
-        r = mboxlist_setacl(&imapd_namespace, intname, identifier, rights,
+        r = mboxlist_setacl(&imapd_namespace, mbname_intname(mbname), identifier, rights,
                             imapd_userisadmin || imapd_userisproxyadmin,
                             proxy_userid, imapd_authstate);
     }
@@ -9127,8 +9110,8 @@ static void cmd_setacl(char *tag, const char *name,
     }
 
 done:
-    mboxname_release(&namespacelock);
-    free(intname);
+    user_nslock_release(&user_nslock);
+    mbname_free(&mbname);
     mboxlist_entry_free(&mbentry);
 }
 
@@ -11418,7 +11401,7 @@ static void cmd_undump(char *tag, char *name)
 {
     int r = 0;
     mbname_t *mbname = mbname_from_extname(name, &imapd_namespace, imapd_userid);
-    struct mboxlock *namespacelock = mboxname_usernamespacelock(mbname_intname(mbname));
+    user_nslock_t *user_nslock = user_nslock_lock(mbname_userid(mbname));
 
     /* administrators only please */
     if (!imapd_userisadmin)
@@ -11443,7 +11426,7 @@ static void cmd_undump(char *tag, char *name)
                     error_message(IMAP_OK_COMPLETED));
     }
 
-    mboxname_release(&namespacelock);
+    user_nslock_release(&user_nslock);
     mbname_free(&mbname);
 }
 
@@ -12635,13 +12618,13 @@ static void cmd_xfer(const char *tag, const char *name,
             }
             if (r) goto next;
 
-            struct mboxlock *namespacelock = user_namespacelock(xfer->userid);
+            user_nslock_t *user_nslock = user_nslock_lock(xfer->userid);
 
             if (!xfer->use_replication) {
                 /* set the quotaroot if needed */
                 r = xfer_setquotaroot(xfer, mbentry->name);
                 if (r) {
-                    mboxname_release(&namespacelock);
+                    user_nslock_release(&user_nslock);
                     goto next;
                 }
 
@@ -12649,7 +12632,7 @@ static void cmd_xfer(const char *tag, const char *name,
                 if (xfer->remoteversion < 12) {
                     r = seen_open(xfer->userid, SEEN_CREATE, &xfer->seendb);
                     if (r) {
-                        mboxname_release(&namespacelock);
+                        user_nslock_release(&user_nslock);
                         goto next;
                     }
                 }
@@ -12659,7 +12642,7 @@ static void cmd_xfer(const char *tag, const char *name,
             r = mboxlist_lookup_allow_all(inbox, &inbox_mbentry, NULL);
             free(inbox);
             if (r) {
-                mboxname_release(&namespacelock);
+                user_nslock_release(&user_nslock);
                 mboxlist_entry_free(&inbox_mbentry);
                 goto next;
             }
@@ -12677,7 +12660,7 @@ static void cmd_xfer(const char *tag, const char *name,
                 syslog(LOG_INFO, "XFER: deleting user metadata");
                 user_deletedata(inbox_mbentry, 0);
             }
-            mboxname_release(&namespacelock);
+            user_nslock_release(&user_nslock);
             mboxlist_entry_free(&inbox_mbentry);
         }
 
@@ -14127,6 +14110,20 @@ static int reset_saslconn(sasl_conn_t **conn)
     /* End TLS/SSL Info */
 
     return SASL_OK;
+}
+
+static void cmd_upgradesieve(char *tag, char *userid)
+{
+    struct mailbox *mailbox = NULL;
+    int r = sieve_ensure_folder(userid, &mailbox, /*silent*/0);
+    if (r) {
+        prot_printf(imapd_out, "%s NO %s\r\n", tag, error_message(r));
+    }
+    else {
+        mailbox_close(&mailbox);
+        prot_printf(imapd_out, "%s OK %s\r\n", tag,
+                    error_message(IMAP_OK_COMPLETED));
+    }
 }
 
 static void cmd_mupdatepush(char *tag, char *name)

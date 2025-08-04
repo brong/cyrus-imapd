@@ -53,6 +53,13 @@
 #define USER_COMPACT_EMAILIDS(cstate) \
     (cstate && cstate->version >= 2 && cstate->compact_emailids)
 
+struct usernamespacelocks {
+    struct mboxlock *l1;
+    struct mboxlock *l2;
+};
+
+typedef struct usernamespacelocks user_nslock_t;
+
 /* check if this user should be treated as being on a replica (for user moves,
  * or for actual replicas */
 int user_isreplicaonly(const char *userid);
@@ -93,10 +100,16 @@ char *user_hash_xapian(const char *userid, const char *root);
 char *user_hash_xapian_byname(const mbname_t *mbname, const char *root);
 char *user_hash_xapian_byid(const char *mboxid, const char *root);
 
+user_nslock_t *user_nslock_full1(const char *a, int locktype);
+user_nslock_t *user_nslock_full2(const char *a, const char *b, int locktype);
+user_nslock_t *user_nslock_fullmb(const char *mba, const char *mbb, int locktype);
+void user_nslock_release(user_nslock_t **ptr);
+int user_nslock_islocked(const char *userid);
+int user_nslock_islockedmb(const char *mboxname);
 /* default to exclusive lock! */
-struct mboxlock *user_namespacelock_full(const char *userid, int locktype);
-#define user_namespacelock(userid) user_namespacelock_full(userid, LOCK_EXCLUSIVE)
-int user_isnamespacelocked(const char *userid);
+/* NULL is a legit value for lock_full, so use a flag value instead */
+#define user_nslock_lock(userid) user_nslock_full1(userid, LOCK_EXCLUSIVE)
+#define user_nslock_lockmb(mboxname) user_nslock_fullmb(mboxname, NULL, LOCK_EXCLUSIVE)
 int user_run_with_lock(const char *userid, int (*cb)(void *), void *rock);
 
 int user_sharee_renameacls(const struct namespace *namespace,
