@@ -841,6 +841,10 @@ Blank lines and lines beginning with ``#'' are ignored.
    mainly useful for regression testing certain edge case handling.
    Currently only implemented for replication uploads. */
 
+{ "debug_deadlock", 0, SWITCH, "UNRELEASED" }
+/* If enabled, debugging information about file locking deadlocks is
+   logged to syslog. */
+
 { "defaultacl", "anyone lrs", STRING, "2.3.17" }
 /* The Access Control List (ACL) placed on a newly-created (non-user)
    mailbox that does not have a parent mailbox. */
