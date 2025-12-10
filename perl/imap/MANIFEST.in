@@ -13,3 +13,16 @@ cyradm.sh               Shell script wrapper for Cyrus::IMAP::Shell
 examples/auditmbox.pl   (lame) Example of Cyrus::IMAP::Admin
 t/01-imclient.t         Test script for Cyrus::IMAP
 t/02-admin.t            (lame) Test script for Cyrus::IMAP::Admin
+Cyrus/AccountSync.pm
+Cyrus/CacheFile.pm
+Cyrus/Backup/Tar.pm
+Cyrus/Backup/State.pm
+Cyrus/Backup/Restore.pm
+Cyrus/IndexFile.pm
+Cyrus/HeaderFile.pm
+Cyrus/DList.pm
+Cyrus/Mbname.pm
+Cyrus/Mbentry.pm
+Cyrus/Backup.pm
+Cyrus/ImapClone.pm
+Cyrus/SyncProto.pm
