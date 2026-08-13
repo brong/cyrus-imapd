@@ -333,6 +333,12 @@ int mboxlist_usermboxtree(const char *userid, const struct auth_state *auth_stat
                           mboxlist_cb *proc, void *rock, int flags);
 int mboxlist_usersubs(const char *userid, mboxlist_cb *proc, void *rock, int flags);
 
+/* like mboxlist_usersubs, but also visits mailboxes whose effective
+ * rights for userid include ACL_AUTOSUB, each mailbox at most once */
+int mboxlist_usersubs_effective(const char *userid,
+                                const struct auth_state *auth_state,
+                                mboxlist_cb *proc, void *rock, int flags);
+
 strarray_t *mboxlist_sublist(const char *userid);
 
 /* Find subscribed mailboxes that match 'pattern'. */

@@ -6513,9 +6513,10 @@ EXPORTED int meth_propfind(struct transaction_t *txn, void *params)
 
                 case URL_NS_ADDRESSBOOK:
                     /* Add responses for shared collections */
-                    mboxlist_usersubs(txn->req_tgt.userid,
-                                      propfind_by_collection, &fctx,
-                                      MBOXTREE_SKIP_PERSONAL);
+                    mboxlist_usersubs_effective(txn->req_tgt.userid,
+                                                httpd_authstate,
+                                                propfind_by_collection, &fctx,
+                                                MBOXTREE_SKIP_PERSONAL);
                     break;
                 }
             }
@@ -7920,9 +7921,10 @@ int expand_property(xmlNodePtr inroot, struct propfind_ctx *fctx,
             case URL_NS_CALENDAR:
             case URL_NS_ADDRESSBOOK:
                 /* Add responses for shared collections */
-                mboxlist_usersubs(fctx->req_tgt->userid,
-                                  propfind_by_collection, fctx,
-                                  MBOXTREE_SKIP_PERSONAL);
+                mboxlist_usersubs_effective(fctx->req_tgt->userid,
+                                            httpd_authstate,
+                                            propfind_by_collection, fctx,
+                                            MBOXTREE_SKIP_PERSONAL);
                 break;
             }
         }

@@ -29,6 +29,7 @@
 #include "assert.h"
 #include "global.h"
 #include "cyrusdb.h"
+#include "hash.h"
 #include "util.h"
 #include "mailbox.h"
 #include "mboxevent.h"
@@ -5359,6 +5360,56 @@ EXPORTED int mboxlist_usersubs(const char *userid, mboxlist_cb *proc,
     return r;
 }
 
+struct effsubs_rock {
+    const char *userid;
+    const struct auth_state *auth_state;
+    hash_table seen;
+    mboxlist_cb *proc;
+    void *rock;
+    int flags;
+};
+
+static int effsubs_subs_cb(const mbentry_t *mbentry, void *vrock)
+{
+    struct effsubs_rock *erock = vrock;
+    hash_insert(mbentry->name, (void *)1, &erock->seen);
+    return erock->proc(mbentry, erock->rock);
+}
+
+static int effsubs_acl_cb(const mbentry_t *mbentry, void *vrock)
+{
+    struct effsubs_rock *erock = vrock;
+
+    if (hash_lookup(mbentry->name, &erock->seen)) return 0;
+    if ((erock->flags & MBOXTREE_SKIP_PERSONAL) &&
+        mboxname_userownsmailbox(erock->userid, mbentry->name))
+        return 0;
+    if (!(cyrus_acl_myrights(erock->auth_state, mbentry->acl) & ACL_AUTOSUB))
+        return 0;
+
+    return erock->proc(mbentry, erock->rock);
+}
+
+/* like mboxlist_usersubs, but also visits mailboxes whose effective
+ * rights for userid include ACL_AUTOSUB, each mailbox at most once.
+ * shared-mailbox coverage relies on reverseacls being enabled, same
+ * as any other MBOXTREE_PLUS_RACL caller */
+EXPORTED int mboxlist_usersubs_effective(const char *userid,
+                                         const struct auth_state *auth_state,
+                                         mboxlist_cb *proc, void *rock,
+                                         int flags)
+{
+    struct effsubs_rock erock = { userid, auth_state, HASH_TABLE_INITIALIZER,
+                                  proc, rock, flags };
+    construct_hash_table(&erock.seen, 1024, 0);
+
+    int r = mboxlist_usersubs(userid, effsubs_subs_cb, &erock, flags);
+    if (!r) r = mboxlist_usermboxtree(userid, auth_state, effsubs_acl_cb,
+                                      &erock, MBOXTREE_PLUS_RACL);
+
+    free_hash_table(&erock.seen, NULL);
+    return r;
+}
 
 
 

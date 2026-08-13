@@ -1,0 +1,61 @@
+#!perl
+use Cassandane::Tiny;
+use Net::CardDAVTalk;
+use XML::Spice;
+
+sub test_carddav_autosub_listing
+    :ReverseACLs
+    ($self)
+{
+    my $admintalk = $self->{adminstore}->get_client();
+    my $service = $self->{instance}->get_service("http");
+
+    $admintalk->create("user.other");
+    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
+
+    xlog $self, "create default addressbook";
+    my $othertalk = Net::CardDAVTalk->new(
+        user => "other",
+        password => 'pass',
+        host => $service->host(),
+        port => $service->port(),
+        scheme => 'http',
+        url => '/',
+        expandurl => 1,
+    );
+
+    $admintalk->setacl('user.other.#addressbooks.Default',
+                       'cassandane' => 'lrs1');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    my $carddav = Net::CardDAVTalk->new(
+        user => 'cassandane',
+        password => 'pass',
+        host => $service->host(),
+        port => $service->port(),
+        scheme => 'http',
+        url => '/',
+        expandurl => 1,
+    );
+
+    xlog $self, "home-set listing must include the flag-granted book";
+
+    # Do a raw PROPFIND rather than Net::CardDAVTalk::GetAddressBooks(): that
+    # helper also asks for D:acl / D:current-user-privilege-set and chokes on
+    # any ace/privilege that XML::Fast collapses to a hashref instead of a
+    # single-element array (the standard cassandane fixture ACL has several
+    # aces with only one privilege each), which is unrelated to what this
+    # test is checking.
+    my $NS_D = $carddav->ns('D');
+    my $Response = $carddav->Request(
+        'PROPFIND', '',
+        x('D:propfind', $carddav->NS(),
+          x('D:prop', x('D:resourcetype'), x('D:displayname')),
+        ),
+        Depth => 1,
+    );
+    my @hrefs = map { $_->{"{$NS_D}href"}{content} }
+                @{$Response->{"{$NS_D}response"} || []};
+    my ($shared) = grep { m{other\.Default} } @hrefs;
+    $self->assert_not_null($shared);
+}
