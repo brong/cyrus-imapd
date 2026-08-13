@@ -13873,10 +13873,10 @@ static int recursivematch_autosub_cb(struct findall_data *data, void *rockp)
     if (!data) return 0;
     if (!data->is_exactmatch) return 0;
     if (!data->mbentry) return 0;
+    if (hash_lookup(data->extname, &rock->table)) return 0;
     if (!(cyrus_acl_myrights(imapd_authstate, data->mbentry->acl)
           & ACL_AUTOSUB))
         return 0;
-    if (hash_lookup(data->extname, &rock->table)) return 0;
 
     struct list_entry *entry = xzmalloc(sizeof(struct list_entry));
     entry->extname = xstrdupsafe(data->extname);

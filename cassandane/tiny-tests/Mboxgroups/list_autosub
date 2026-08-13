@@ -48,4 +48,28 @@ sub test_list_autosub
     my $lsubdata = $imaptalk->lsub("", "*");
     my ($lshared) = grep { $_->[2] eq 'user.otheruser.autoshared' } @{$lsubdata};
     $self->assert_not_null($lshared);
+
+    # at this point the real subscription was removed above, so this
+    # exercises the flag-only (no real subscription) case for the
+    # RECURSIVEMATCH path specifically
+    xlog $self, "LIST (SUBSCRIBED RECURSIVEMATCH) shows the flag-granted folder";
+    my $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
+    my @recnames = map { $_->[2] } @{$recdata};
+    my %reccount;
+    $reccount{$_}++ for @recnames;
+    $self->assert_num_equals(1, $reccount{'user.otheruser.autoshared'});
+    my ($recshared) =
+        grep { $_->[2] eq 'user.otheruser.autoshared' } @{$recdata};
+    my %recflags = map { lc($_) => 1 } @{$recshared->[0]};
+    $self->assert_not_null($recflags{'\\subscribed'});
+
+    xlog $self, "... and still exactly once when also really subscribed";
+    $imaptalk->subscribe("user.otheruser.autoshared");
+    $self->assert_str_equals('ok', $imaptalk->get_last_completion_response());
+
+    $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
+    @recnames = map { $_->[2] } @{$recdata};
+    %reccount = ();
+    $reccount{$_}++ for @recnames;
+    $self->assert_num_equals(1, $reccount{'user.otheruser.autoshared'});
 }
