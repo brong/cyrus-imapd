@@ -371,6 +371,12 @@ int mboxlist_findstage(const char *name, char *stagedir, size_t sd_len);
 /* Check 'user's subscription status for mailbox 'name' */
 int mboxlist_checksub(const char *name, const char *userid);
 
+/* effective subscription: a real subs entry, or ACL_AUTOSUB in the
+ * user's effective rights. auth_state may be NULL, in which case one
+ * is constructed for userid. Returns nonzero if subscribed. */
+int mboxlist_issubscribed(const char *name, const char *userid,
+                          const struct auth_state *auth_state);
+
 /* Change 'user's subscription status for mailbox 'name'. */
 int mboxlist_changesub(const char *name, const char *userid,
                        const struct auth_state *auth_state,

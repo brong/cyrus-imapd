@@ -5441,6 +5441,29 @@ EXPORTED int mboxlist_checksub(const char *name, const char *userid)
     return r;
 }
 
+/* effective subscription: a real subs entry, or ACL_AUTOSUB in the
+ * user's effective rights. auth_state may be NULL, in which case one
+ * is constructed for userid. Returns nonzero if subscribed. */
+EXPORTED int mboxlist_issubscribed(const char *name, const char *userid,
+                                   const struct auth_state *auth_state)
+{
+    if (mboxlist_checksub(name, userid) == 0) return 1;
+
+    mbentry_t *mbentry = NULL;
+    if (mboxlist_lookup(name, &mbentry, NULL)) return 0;
+
+    struct auth_state *mystate = NULL;
+    if (!auth_state)
+        auth_state = mystate = auth_newstate(userid);
+
+    int rights = cyrus_acl_myrights(auth_state, mbentry->acl);
+
+    if (mystate) auth_freestate(mystate);
+    mboxlist_entry_free(&mbentry);
+
+    return (rights & ACL_AUTOSUB) ? 1 : 0;
+}
+
 /*
  * Change 'user's subscription status for mailbox 'name'.
  * Subscribes if 'add' is nonzero, unsubscribes otherwise.

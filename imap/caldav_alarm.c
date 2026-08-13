@@ -729,7 +729,7 @@ static int has_peruser_alarms_cb(const char *mailbox,
 
     if (!mboxname_userownsmailbox(userid, mailbox) &&
         ((hrock->mbox_options & OPT_IMAP_SHAREDSEEN) ||
-         mboxlist_checksub(mailbox, userid) != 0)) {
+         !mboxlist_issubscribed(mailbox, userid, NULL))) {
         /* No per-user-data, or sharee has unsubscribed from this calendar */
         return 0;
     }
@@ -1266,7 +1266,7 @@ static int process_peruser_alarms_cb(const char *mailbox, uint32_t uid,
 
     if (!mboxname_userownsmailbox(userid, mailbox) &&
         ((prock->mbox_options & OPT_IMAP_SHAREDSEEN) ||
-         mboxlist_checksub(mailbox, userid) != 0)) {
+         !mboxlist_issubscribed(mailbox, userid, NULL))) {
         /* No per-user-data, or sharee has unsubscribed from this calendar */
         return 0;
     }
