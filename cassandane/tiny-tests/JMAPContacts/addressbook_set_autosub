@@ -1,0 +1,69 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_addressbook_set_autosub
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $admintalk = $self->{adminstore}->get_client();
+    my $service = $self->{instance}->get_service("http");
+
+    $admintalk->create("user.other");
+    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
+
+    my $othertalk = Net::CardDAVTalk->new(
+        user => "other",
+        password => 'pass',
+        host => $service->host(),
+        port => $service->port(),
+        scheme => 'http',
+        url => '/',
+        expandurl => 1,
+    );
+
+    $admintalk->setacl('user.other.#addressbooks.Default',
+                       'cassandane' => 'lrs1');
+
+    my $res = $jmap->CallMethods([
+        ['AddressBook/get', {
+            accountId => 'other',
+            properties => ['isSubscribed'],
+        }, 'R1'],
+    ]);
+    my $id = $res->[0][1]{list}[0]{id};
+    $self->assert_equals(JSON::true, $res->[0][1]{list}[0]{isSubscribed});
+
+    xlog $self, "subscribe for real, then unsubscribe: both must succeed";
+    $res = $jmap->CallMethods([
+        ['AddressBook/set', {
+            accountId => 'other',
+            update => { $id => { isSubscribed => JSON::true } },
+        }, 'R1'],
+        ['AddressBook/set', {
+            accountId => 'other',
+            update => { $id => { isSubscribed => JSON::false } },
+        }, 'R2'],
+        ['AddressBook/get', {
+            accountId => 'other', ids => [$id],
+            properties => ['isSubscribed'],
+        }, 'R3'],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$id});
+    $self->assert(exists $res->[1][1]{updated}{$id});
+
+    xlog $self, "server reports the still-true effective state";
+    $self->assert_equals(JSON::true,
+        $res->[1][1]{updated}{$id}{isSubscribed});
+    $self->assert_equals(JSON::true, $res->[2][1]{list}[0]{isSubscribed});
+
+    xlog $self, "removing the flag reveals the real (removed) entry";
+    $admintalk->setacl('user.other.#addressbooks.Default',
+                       'cassandane' => 'lrs');
+    $res = $jmap->CallMethods([
+        ['AddressBook/get', {
+            accountId => 'other', ids => [$id],
+            properties => ['isSubscribed'],
+        }, 'R1'],
+    ]);
+    $self->assert_equals(JSON::false, $res->[0][1]{list}[0]{isSubscribed});
+}

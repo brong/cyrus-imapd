@@ -2252,8 +2252,16 @@ static void setcalendars_update(jmap_req_t *req,
         goto done;
     }
 
-    /* Report calendar as updated. */
-    *record = json_null();
+    /* Report calendar as updated. If the client asked to
+     * unsubscribe but an auto-subscribe ACL keeps them subscribed,
+     * report the effective value back as server-set. */
+    if (props.isSubscribed == 0 &&
+            (jmap_myrights(req, mboxname) & ACL_AUTOSUB)) {
+        *record = json_pack("{s:b}", "isSubscribed", 1);
+    }
+    else {
+        *record = json_null();
+    }
 
 done:
     setcalendar_props_fini(&props);
