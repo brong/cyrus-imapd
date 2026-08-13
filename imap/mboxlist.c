@@ -5393,7 +5393,10 @@ static int effsubs_acl_cb(const mbentry_t *mbentry, void *vrock)
 /* like mboxlist_usersubs, but also visits mailboxes whose effective
  * rights for userid include ACL_AUTOSUB, each mailbox at most once.
  * shared-mailbox coverage relies on reverseacls being enabled, same
- * as any other MBOXTREE_PLUS_RACL caller */
+ * as any other MBOXTREE_PLUS_RACL caller.
+ * rights are computed from auth_state, while RACL enumeration keys
+ * off userid, so callers must pass a (userid, auth_state) pair that
+ * name the same principal */
 EXPORTED int mboxlist_usersubs_effective(const char *userid,
                                          const struct auth_state *auth_state,
                                          mboxlist_cb *proc, void *rock,

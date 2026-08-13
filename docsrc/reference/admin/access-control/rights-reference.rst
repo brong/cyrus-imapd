@@ -407,3 +407,13 @@ Individual Rights Reference
     as an organisation-wide address book shared to a group, where
     subscription should not depend on individual users managing it
     themselves.
+
+    Granting this right to the ``anyone`` identifier auto-subscribes
+    every user with access to the mailbox. That's coherent, but almost
+    never what's wanted; grant it to a ``group:`` identifier instead.
+
+    IMAP ``NOTIFY (SUBSCRIBED)`` and the subscribed-scope ``ESEARCH``
+    multisearch consult only real subscription entries, not this
+    right. This only matters when the right is granted on a regular
+    mail folder: neither feature applies to calendars, address books
+    or the other collection types this right can also be granted on.
