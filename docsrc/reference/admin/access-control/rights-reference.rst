@@ -374,3 +374,36 @@ Individual Rights Reference
         :ref:`imap-admin-access-control-right-e`,
         :ref:`imap-admin-access-control-right-t` and
         :ref:`imap-admin-access-control-right-x` rights.
+
+.. _imap-admin-access-control-right-1:
+
+``1``
+-----
+
+    Stands for **auto-subscribe**. This is a Cyrus-specific right: one
+    of the :rfc:`4314` digit rights reserved for local or site-defined
+    use.
+
+    Any user whose effective rights on a mailbox include the
+    :ref:`imap-admin-access-control-right-1` right -- whether granted
+    directly, or through a ``group:`` identifier (see
+    :ref:`imap-admin-access-control-identifiers`) -- is treated as
+    subscribed to that mailbox. Such a mailbox appears in the ``LSUB``
+    response and in ``LIST (SUBSCRIBED)`` / ``LIST`` ``RETURN
+    (SUBSCRIBED)`` responses, is reported with ``isSubscribed: true``
+    over JMAP for Mailbox, Calendar and AddressBook objects, is listed
+    among the user's shared CalDAV and CardDAV collections (this
+    enumeration requires :imapdconf:`reverseacls` to be enabled), and
+    has its per-user calendar alarms fire as normal.
+
+    ``SUBSCRIBE`` and ``UNSUBSCRIBE`` still operate on the user's real
+    subscription entry for the mailbox and succeed as usual. However,
+    while the :ref:`imap-admin-access-control-right-1` right is held,
+    the mailbox's effective subscription state remains subscribed
+    regardless of that entry; removing the right restores whatever the
+    user's real subscription state was.
+
+    This right is intended for centrally-managed shared folders, such
+    as an organisation-wide address book shared to a group, where
+    subscription should not depend on individual users managing it
+    themselves.
