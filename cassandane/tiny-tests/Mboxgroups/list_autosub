@@ -1,0 +1,51 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_list_autosub
+    :NoAltNamespace
+    ($self)
+{
+    my $admintalk = $self->{adminstore}->get_client();
+    my $imaptalk = $self->{store}->get_client();
+
+    $admintalk->create("user.otheruser.autoshared");
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+    $admintalk->setacl("user.otheruser.autoshared", "group:group co", "lrs1");
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    # a normally-subscribed folder of our own, for the merge/dedup case
+    $imaptalk->create("INBOX.mine");
+    $imaptalk->subscribe("INBOX.mine");
+    # and subscribe the shared one for real as well: must NOT duplicate
+    $imaptalk->subscribe("user.otheruser.autoshared");
+
+    xlog $self, "LIST (SUBSCRIBED) shows both, no duplicates";
+    my $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    my @names = map { $_->[2] } @{$subdata};
+    my %count;
+    $count{$_}++ for @names;
+    $self->assert_num_equals(1, $count{'user.otheruser.autoshared'});
+    $self->assert_num_equals(1, $count{'INBOX.mine'});
+
+    xlog $self, "unsubscribe succeeds, folder stays listed via the flag";
+    $imaptalk->unsubscribe("user.otheruser.autoshared");
+    $self->assert_str_equals('ok', $imaptalk->get_last_completion_response());
+
+    $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    @names = map { $_->[2] } @{$subdata};
+    %count = ();
+    $count{$_}++ for @names;
+    $self->assert_num_equals(1, $count{'user.otheruser.autoshared'});
+
+    xlog $self, "RETURN (SUBSCRIBED) annotates the flag-granted folder";
+    my $retdata = $imaptalk->list([qw()], "", "*", 'RETURN', [qw(SUBSCRIBED)]);
+    my ($shared) = grep { $_->[2] eq 'user.otheruser.autoshared' } @{$retdata};
+    $self->assert_not_null($shared);
+    my %flags = map { lc($_) => 1 } @{$shared->[0]};
+    $self->assert_not_null($flags{'\\subscribed'});
+
+    xlog $self, "LSUB shows it too";
+    my $lsubdata = $imaptalk->lsub("", "*");
+    my ($lshared) = grep { $_->[2] eq 'user.otheruser.autoshared' } @{$lsubdata};
+    $self->assert_not_null($lshared);
+}

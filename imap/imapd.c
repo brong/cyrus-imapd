@@ -13367,8 +13367,17 @@ static void list_response(const char *extname, const mbentry_t *mbentry,
 
 static void _addsubs(struct list_rock *rock)
 {
+    /* rock->subs is only populated for RETURN (SUBSCRIBED) on a normal
+     * LIST; that's also the only case where this ACL check should apply
+     * -- otherwise \Subscribed would leak into plain LIST responses that
+     * never asked for subscription state */
     if (!rock->subs) return;
     if (!rock->last_mbentry) return;
+
+    if (cyrus_acl_myrights(imapd_authstate, rock->last_mbentry->acl)
+        & ACL_AUTOSUB)
+        rock->last_attributes |= MBOX_ATTRIBUTE_SUBSCRIBED;
+
     int i;
     const char *last_name = rock->last_mbentry->name;
     int namelen = strlen(last_name);
@@ -13647,6 +13656,46 @@ static int subscribed_cb(struct findall_data *data, void *rockp)
     return 0;
 }
 
+struct autosub_rock {
+    struct list_rock *lrock;
+    strarray_t *subs;   /* real subscriptions, internal names */
+};
+
+/* callback for mboxlist_findallmulti in the autosub second pass:
+ * emit mailboxes the user holds ACL_AUTOSUB on which were not
+ * already emitted from the real subscription list */
+static int autosub_cb(struct findall_data *data, void *rockp)
+{
+    struct autosub_rock *arock = (struct autosub_rock *) rockp;
+
+    if (!data) {
+        perform_output(NULL, NULL, arock->lrock);
+        return 0;
+    }
+    if (!data->is_exactmatch) return 0;
+    if (!data->mbentry) return 0;
+    if (strarray_contains(arock->subs, data->mbentry->name)) return 0;
+    if (!(cyrus_acl_myrights(imapd_authstate, data->mbentry->acl)
+          & ACL_AUTOSUB))
+        return 0;
+
+    perform_output(data->extname, data->mbentry, arock->lrock);
+    arock->lrock->last_attributes |= MBOX_ATTRIBUTE_SUBSCRIBED;
+    return 0;
+}
+
+static void list_autosub_pass(struct list_rock *rock,
+                               struct listargs *listargs)
+{
+    struct autosub_rock arock;
+    arock.lrock = rock;
+    arock.subs = mboxlist_sublist(imapd_userid);
+    mboxlist_findallmulti(&imapd_namespace, &listargs->pat,
+                          imapd_userisadmin, imapd_userid,
+                          imapd_authstate, autosub_cb, &arock);
+    strarray_free(arock.subs);
+}
+
 /*
  * Takes the "reference name" and "mailbox name" arguments of the LIST command
  * and returns a "canonical LIST pattern". The caller is responsible for
@@ -13813,6 +13862,33 @@ static int recursivematch_cb(struct findall_data *data, void *rockp)
     return 0;
 }
 
+/* callback for mboxlist_findallmulti in the recursivematch autosub second
+ * pass: mirrors recursivematch_cb's hash-insert idiom, adding mailboxes
+ * granted ACL_AUTOSUB that aren't already in the table (from a real
+ * subscription or an earlier call to this same callback) */
+static int recursivematch_autosub_cb(struct findall_data *data, void *rockp)
+{
+    struct list_rock_recursivematch *rock = (struct list_rock_recursivematch *)rockp;
+
+    if (!data) return 0;
+    if (!data->is_exactmatch) return 0;
+    if (!data->mbentry) return 0;
+    if (!(cyrus_acl_myrights(imapd_authstate, data->mbentry->acl)
+          & ACL_AUTOSUB))
+        return 0;
+    if (hash_lookup(data->extname, &rock->table)) return 0;
+
+    struct list_entry *entry = xzmalloc(sizeof(struct list_entry));
+    entry->extname = xstrdupsafe(data->extname);
+    entry->mbentry = mboxlist_entry_copy(data->mbentry);
+    entry->attributes |= MBOX_ATTRIBUTE_SUBSCRIBED;
+
+    hash_insert(data->extname, entry, &rock->table);
+    rock->count++;
+
+    return 0;
+}
+
 /* callback for hash_enumerate */
 static void copy_to_array(const char *key __attribute__((unused)), void *data, void *void_rock)
 {
@@ -13850,6 +13926,11 @@ static void list_data_recursivematch(struct listargs *listargs)
     /* find */
     mboxlist_findsubmulti(&imapd_namespace, &listargs->pat, imapd_userisadmin, imapd_userid,
                           imapd_authstate, recursivematch_cb, &rock, 1);
+
+    /* additive pass: mailboxes auto-subscribed via ACL */
+    mboxlist_findallmulti(&imapd_namespace, &listargs->pat,
+                          imapd_userisadmin, imapd_userid,
+                          imapd_authstate, recursivematch_autosub_cb, &rock);
 
     if (rock.count) {
         int i;
@@ -13913,6 +13994,9 @@ static void list_data(struct listargs *listargs)
             mboxlist_findsubmulti(&imapd_namespace, &listargs->pat,
                                   imapd_userisadmin, imapd_userid,
                                   imapd_authstate, subscribed_cb, &rock, 1);
+
+            /* additive pass: mailboxes auto-subscribed via ACL */
+            list_autosub_pass(&rock, listargs);
         }
         else {
             if (config_mupdate_server) {
