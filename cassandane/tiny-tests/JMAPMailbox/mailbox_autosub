@@ -1,0 +1,46 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_mailbox_autosub
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $imaptalk = $self->{store}->get_client();
+    my $admintalk = $self->{adminstore}->get_client();
+
+    xlog $self, "create another user with a shared folder";
+    $self->{instance}->create_user("other");
+    $admintalk->create("user.other.shared") or die;
+    $admintalk->setacl("user.other.shared", "cassandane", "lrs1") or die;
+
+    my $res = $jmap->CallMethods([
+        ['Mailbox/get', {
+            accountId => 'other',
+            properties => ['name', 'isSubscribed'],
+        }, 'R1'],
+    ]);
+    my %byname = map { $_->{name} => $_ } @{$res->[0][1]{list}};
+    my $mbox = $byname{shared};
+    $self->assert_not_null($mbox);
+    $self->assert_equals(JSON::true, $mbox->{isSubscribed});
+
+    xlog $self, "query with isSubscribed filter must agree with get";
+    $res = $jmap->CallMethods([
+        ['Mailbox/query', {
+            accountId => 'other',
+            filter => { isSubscribed => JSON::true },
+        }, 'R1'],
+    ]);
+    $self->assert_deep_equals([$mbox->{id}], $res->[0][1]{ids});
+
+    xlog $self, "unsubscribe is accepted and reports effective true";
+    $res = $jmap->CallMethods([
+        ['Mailbox/set', {
+            accountId => 'other',
+            update => { $mbox->{id} => { isSubscribed => JSON::false } },
+        }, 'R1'],
+    ]);
+    $self->assert(exists $res->[0][1]{updated}{$mbox->{id}});
+    $self->assert_equals(JSON::true,
+        $res->[0][1]{updated}{$mbox->{id}}{isSubscribed});
+}
