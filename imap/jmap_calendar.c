@@ -813,6 +813,10 @@ static int getcalendars_cb(const mbentry_t *mbentry, void *vrock)
             /* Users always subscribe their own calendars */
             is_subscribed = 1;
         }
+        else if (rights & ACL_AUTOSUB) {
+            /* ACL keeps this user subscribed */
+            is_subscribed = 1;
+        }
         else {
             /* Lookup mailbox subscriptions */
             is_subscribed = mboxlist_checksub(mbentry->name, req->userid) == 0;

@@ -1,0 +1,39 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_addressbook_get_autosub_group
+    :Mboxgroups
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $admintalk = $self->{adminstore}->get_client();
+    my $service = $self->{instance}->get_service("http");
+
+    $admintalk->create("user.other");
+    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
+
+    my $othertalk = Net::CardDAVTalk->new(
+        user => "other",
+        password => 'pass',
+        host => $service->host(),
+        port => $service->port(),
+        scheme => 'http',
+        url => '/',
+        expandurl => 1,
+    );
+
+    $admintalk->_imap_cmd('SETUSERGROUP', 0, '', 'cassandane', 'group:c1-all');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    $admintalk->setacl('user.other.#addressbooks.Default',
+                       'group:c1-all' => 'lrs1');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    my $res = $jmap->CallMethods([
+        ['AddressBook/get', {
+            accountId => 'other',
+            properties => ['isSubscribed'],
+        }, 'R1'],
+    ]);
+    $self->assert_equals(JSON::true, $res->[0][1]{list}[0]{isSubscribed});
+}

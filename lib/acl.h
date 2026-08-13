@@ -34,6 +34,11 @@
 #define ACL_USER9       0x100000L
 #define ACL_USER0       0x200000L
 
+/* alias: a user (or group member) whose effective rights include
+ * ACL_USER1 is treated as subscribed to the mailbox, with no
+ * subscription-db entry needed (and none removable) */
+#define ACL_AUTOSUB     ACL_USER1
+
 /* ALL: all non-user ACLs */
 #define ACL_ALL         (ACL_LOOKUP|ACL_READ|ACL_SETSEEN|ACL_WRITE\
                         |ACL_INSERT|ACL_POST|ACL_CREATE|ACL_DELETEMBOX\

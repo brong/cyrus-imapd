@@ -1,0 +1,52 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_addressbook_get_autosub
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $admintalk = $self->{adminstore}->get_client();
+    my $service = $self->{instance}->get_service("http");
+
+    xlog $self, "create shared account with an addressbook";
+    $admintalk->create("user.other");
+    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
+
+    xlog $self, "create default addressbook";
+    my $othertalk = Net::CardDAVTalk->new(
+        user => "other",
+        password => 'pass',
+        host => $service->host(),
+        port => $service->port(),
+        scheme => 'http',
+        url => '/',
+        expandurl => 1,
+    );
+
+    xlog $self, "grant cassandane rights without the autosub flag";
+    $admintalk->setacl('user.other.#addressbooks.Default', 'cassandane' => 'lrs');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    my $res = $jmap->CallMethods([
+        ['AddressBook/get', {
+            accountId => 'other',
+            properties => ['isSubscribed'],
+        }, 'R1'],
+    ]);
+    my $id = $res->[0][1]{list}[0]{id};
+    $self->assert_not_null($id);
+    $self->assert_equals(JSON::false, $res->[0][1]{list}[0]{isSubscribed});
+
+    xlog $self, "add the autosub flag '1' to the grant";
+    $admintalk->setacl('user.other.#addressbooks.Default', 'cassandane' => 'lrs1');
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    $res = $jmap->CallMethods([
+        ['AddressBook/get', {
+            accountId => 'other',
+            ids => [$id],
+            properties => ['isSubscribed'],
+        }, 'R1'],
+    ]);
+    $self->assert_equals(JSON::true, $res->[0][1]{list}[0]{isSubscribed});
+}
