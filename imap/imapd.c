@@ -13873,6 +13873,20 @@ static int recursivematch_autosub_cb(struct findall_data *data, void *rockp)
     if (!data) return 0;
     if (!data->is_exactmatch) return 0;
     if (!data->mbentry) return 0;
+
+    /* skip non-IMAP mailboxes (DAV collections, etc), same as
+     * recursivematch_cb */
+    if (!(imapd_userisadmin || (rock->listargs->sel & LIST_SEL_DAV))) {
+        const char *intname = data->mbentry->name;
+
+        if (mboxname_iscalendarmailbox(intname, 0) ||
+            mboxname_isaddressbookmailbox(intname, 0) ||
+            mboxname_isdavdrivemailbox(intname, 0) ||
+            mboxname_isdavnotificationsmailbox(intname, 0) ||
+            mboxname_issievemailbox(intname, 0))
+            return 0;
+    }
+
     if (hash_lookup(data->extname, &rock->table)) return 0;
     if (!(cyrus_acl_myrights(imapd_authstate, data->mbentry->acl)
           & ACL_AUTOSUB))

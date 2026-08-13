@@ -72,4 +72,22 @@ sub test_list_autosub
     %reccount = ();
     $reccount{$_}++ for @recnames;
     $self->assert_num_equals(1, $reccount{'user.otheruser.autoshared'});
+
+    xlog $self, "granting '1' on a DAV mailbox doesn't surface it as subscribed";
+    $admintalk->create("user.otheruser.#addressbooks.Shared",
+                        ['TYPE', 'ADDRESSBOOK']);
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+    $admintalk->setacl("user.otheruser.#addressbooks.Shared",
+                        "group:group co", "lrs1");
+    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+
+    $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    @names = map { $_->[2] } @{$subdata};
+    $self->assert(!grep { $_ eq 'user.otheruser.#addressbooks.Shared' }
+                        @names);
+
+    $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
+    @recnames = map { $_->[2] } @{$recdata};
+    $self->assert(!grep { $_ eq 'user.otheruser.#addressbooks.Shared' }
+                        @recnames);
 }
