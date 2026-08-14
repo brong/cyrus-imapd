@@ -118,3 +118,39 @@ sub test_list_autosub_after_unsubscribe
         "RECURSIVEMATCH shows the flag-granted folder with no real subscription",
     );
 }
+
+sub test_list_autosub_dav_excluded
+    :NoAltNamespace
+    ($self)
+{
+    my $imaptalk  = $self->setup_list_autosub;
+    my $admintalk = $self->{adminstore}->get_client();
+
+    xlog $self, "grant '1' on a DAV mailbox as well";
+    $admintalk->create("user.otheruser.#addressbooks.Shared",
+                       [ 'TYPE', 'ADDRESSBOOK' ]) or die "create: $@";
+    $admintalk->setacl("user.otheruser.#addressbooks.Shared",
+                       "group:group co", "lrs1") or die "setacl: $@";
+
+    # the DAV mailbox is absent from both expected listings: all three
+    # listing paths must agree that '1' does not surface it
+    my $expected = {
+        'INBOX.mine' => [ '\\Subscribed' ],
+        'user.otheruser.autoshared' => [ '\\Subscribed' ],
+    };
+
+    my $subscribed = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    my $recursive = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
+
+    $self->assert_list_autosub(
+        $subscribed,
+        $expected,
+        "LIST (SUBSCRIBED) does not surface the DAV mailbox",
+    );
+
+    $self->assert_list_autosub(
+        $recursive,
+        $expected,
+        "LIST (SUBSCRIBED RECURSIVEMATCH) does not surface it either",
+    );
+}
