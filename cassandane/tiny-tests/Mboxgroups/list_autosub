@@ -1,93 +1,97 @@
 #!perl
 use Cassandane::Tiny;
 
-sub test_list_autosub
+# Share a folder with the '1' (ACL_AUTOSUB) right, and give cassandane a
+# folder of its own subscribed the ordinary way, for the merge/dedup case.
+sub setup_list_autosub ($self)
+{
+    my $admintalk = $self->{adminstore}->get_client();
+    my $imaptalk  = $self->{store}->get_client();
+
+    $admintalk->create("user.otheruser.autoshared") or die "create: $@";
+    $admintalk->setacl("user.otheruser.autoshared", "group:group co", "lrs1")
+        or die "setacl: $@";
+
+    $imaptalk->create("INBOX.mine") or die "create: $@";
+    $imaptalk->subscribe("INBOX.mine") or die "subscribe: $@";
+
+    return $imaptalk;
+}
+
+# assert_mailbox_structure() indexes responses by name, so a duplicated
+# response would collapse and go unnoticed -- count them first, since not
+# duplicating the merged-in mailboxes is the point of these tests.
+sub assert_list_autosub ($self, $data, $expected, $msg)
+{
+    my %count;
+    $count{ $_->[2] }++ for $data->@*;
+    my @dupes = grep {; $count{$_} > 1 } sort keys %count;
+    $self->assert_num_equals(0, scalar @dupes, "duplicated in LIST: @dupes");
+
+    $self->assert_mailbox_structure($data, '.', $expected, 0, $msg);
+}
+
+sub test_list_autosub_subscribed
     :NoAltNamespace
     ($self)
 {
-    my $admintalk = $self->{adminstore}->get_client();
-    my $imaptalk = $self->{store}->get_client();
+    my $imaptalk = $self->setup_list_autosub;
 
-    $admintalk->create("user.otheruser.autoshared");
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
-    $admintalk->setacl("user.otheruser.autoshared", "group:group co", "lrs1");
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
+    xlog $self, "subscribe the shared folder for real as well";
+    $imaptalk->subscribe("user.otheruser.autoshared") or die "subscribe: $@";
 
-    # a normally-subscribed folder of our own, for the merge/dedup case
-    $imaptalk->create("INBOX.mine");
-    $imaptalk->subscribe("INBOX.mine");
-    # and subscribe the shared one for real as well: must NOT duplicate
-    $imaptalk->subscribe("user.otheruser.autoshared");
+    my $subscribed = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
 
-    xlog $self, "LIST (SUBSCRIBED) shows both, no duplicates";
-    my $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
-    my @names = map { $_->[2] } @{$subdata};
-    my %count;
-    $count{$_}++ for @names;
-    $self->assert_num_equals(1, $count{'user.otheruser.autoshared'});
-    $self->assert_num_equals(1, $count{'INBOX.mine'});
+    $self->assert_list_autosub(
+        $subscribed,
+        {
+            'INBOX.mine' => [ '\\Subscribed' ],
+            'user.otheruser.autoshared' => [ '\\Subscribed' ],
+        },
+        "LIST (SUBSCRIBED) shows the real and the flag-granted subscription",
+    );
+}
 
-    xlog $self, "unsubscribe succeeds, folder stays listed via the flag";
-    $imaptalk->unsubscribe("user.otheruser.autoshared");
-    $self->assert_str_equals('ok', $imaptalk->get_last_completion_response());
+sub test_list_autosub_after_unsubscribe
+    :NoAltNamespace
+    ($self)
+{
+    my $imaptalk = $self->setup_list_autosub;
 
-    $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
-    @names = map { $_->[2] } @{$subdata};
-    %count = ();
-    $count{$_}++ for @names;
-    $self->assert_num_equals(1, $count{'user.otheruser.autoshared'});
+    xlog $self, "unsubscribing the flag-granted folder succeeds";
+    $imaptalk->subscribe("user.otheruser.autoshared") or die "subscribe: $@";
+    $imaptalk->unsubscribe("user.otheruser.autoshared")
+        or die "unsubscribe: $@";
 
-    xlog $self, "RETURN (SUBSCRIBED) annotates the flag-granted folder";
-    my $retdata = $imaptalk->list([qw()], "", "*", 'RETURN', [qw(SUBSCRIBED)]);
-    my ($shared) = grep { $_->[2] eq 'user.otheruser.autoshared' } @{$retdata};
-    $self->assert_not_null($shared);
-    my %flags = map { lc($_) => 1 } @{$shared->[0]};
-    $self->assert_not_null($flags{'\\subscribed'});
+    my $subscribed = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    my $lsub = $imaptalk->lsub("", "*");
+    my $returned = $imaptalk->list([qw()], "", "*", 'RETURN', [qw(SUBSCRIBED)]);
 
-    xlog $self, "LSUB shows it too";
-    my $lsubdata = $imaptalk->lsub("", "*");
-    my ($lshared) = grep { $_->[2] eq 'user.otheruser.autoshared' } @{$lsubdata};
-    $self->assert_not_null($lshared);
+    $self->assert_list_autosub(
+        $subscribed,
+        {
+            'INBOX.mine' => [ '\\Subscribed' ],
+            'user.otheruser.autoshared' => [ '\\Subscribed' ],
+        },
+        "... but the folder stays listed via the flag",
+    );
 
-    # at this point the real subscription was removed above, so this
-    # exercises the flag-only (no real subscription) case for the
-    # RECURSIVEMATCH path specifically
-    xlog $self, "LIST (SUBSCRIBED RECURSIVEMATCH) shows the flag-granted folder";
-    my $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
-    my @recnames = map { $_->[2] } @{$recdata};
-    my %reccount;
-    $reccount{$_}++ for @recnames;
-    $self->assert_num_equals(1, $reccount{'user.otheruser.autoshared'});
-    my ($recshared) =
-        grep { $_->[2] eq 'user.otheruser.autoshared' } @{$recdata};
-    my %recflags = map { lc($_) => 1 } @{$recshared->[0]};
-    $self->assert_not_null($recflags{'\\subscribed'});
+    $self->assert_list_autosub(
+        $lsub,
+        {
+            'INBOX.mine' => [],
+            'user.otheruser.autoshared' => [],
+        },
+        "LSUB shows it too",
+    );
 
-    xlog $self, "... and still exactly once when also really subscribed";
-    $imaptalk->subscribe("user.otheruser.autoshared");
-    $self->assert_str_equals('ok', $imaptalk->get_last_completion_response());
-
-    $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
-    @recnames = map { $_->[2] } @{$recdata};
-    %reccount = ();
-    $reccount{$_}++ for @recnames;
-    $self->assert_num_equals(1, $reccount{'user.otheruser.autoshared'});
-
-    xlog $self, "granting '1' on a DAV mailbox doesn't surface it as subscribed";
-    $admintalk->create("user.otheruser.#addressbooks.Shared",
-                        ['TYPE', 'ADDRESSBOOK']);
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
-    $admintalk->setacl("user.otheruser.#addressbooks.Shared",
-                        "group:group co", "lrs1");
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
-
-    $subdata = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
-    @names = map { $_->[2] } @{$subdata};
-    $self->assert(!grep { $_ eq 'user.otheruser.#addressbooks.Shared' }
-                        @names);
-
-    $recdata = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
-    @recnames = map { $_->[2] } @{$recdata};
-    $self->assert(!grep { $_ eq 'user.otheruser.#addressbooks.Shared' }
-                        @recnames);
+    $self->assert_list_autosub(
+        $returned,
+        {
+            'INBOX' => [],
+            'INBOX.mine' => [ '\\Subscribed' ],
+            'user.otheruser.autoshared' => [ '\\Subscribed' ],
+        },
+        "RETURN (SUBSCRIBED) annotates the flag-granted folder",
+    );
 }
