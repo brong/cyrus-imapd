@@ -1,52 +1,52 @@
 #!perl
 use Cassandane::Tiny;
 
-sub test_addressbook_get_autosub
+# The '1' (ACL_AUTOSUB) right on a shared addressbook makes AddressBook/get
+# report isSubscribed even though the sharee never subscribed.
+sub assert_addressbook_get_autosub ($self, $grantee)
+{
+    my $jmap  = $self->default_user->jmap;
+    my $admin = $self->{adminstore}->get_client();
+
+    my $other = $self->{instance}->create_user('other');
+    my $abook = $other->addressbooks->default;
+
+    for my $case ([ lrs => jfalse() ], [ lrs1 => jtrue() ]) {
+        my ($acl, $want) = @$case;
+
+        xlog $self, "grant '$acl' to $grantee";
+        $admin->setacl('user.other.#addressbooks.Default', $grantee => $acl)
+            or die "setacl: $@";
+
+        my $res = $jmap->request([
+            [ 'AddressBook/get', {
+                accountId  => 'other',
+                ids        => [ $abook->id ],
+                properties => [ 'isSubscribed' ],
+            } ],
+        ]);
+
+        my $books = $res->single_sentence('AddressBook/get')->arguments->{list};
+
+        $self->assert_cmp_deeply(
+            [ superhashof({ id => $abook->id, isSubscribed => $want }) ],
+            $books,
+            "isSubscribed for ACL '$acl'",
+        );
+    }
+}
+
+sub test_addressbook_get_autosub_user ($self)
+{
+    $self->assert_addressbook_get_autosub('cassandane');
+}
+
+sub test_addressbook_get_autosub_group
+    :Mboxgroups
     ($self)
 {
-    my $jmap = $self->{jmap};
-    my $admintalk = $self->{adminstore}->get_client();
-    my $service = $self->{instance}->get_service("http");
+    $self->{adminstore}->get_client
+         ->_imap_cmd('SETUSERGROUP', 0, '', 'cassandane', 'group:c1-all');
 
-    xlog $self, "create shared account with an addressbook";
-    $admintalk->create("user.other");
-    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
-
-    xlog $self, "create default addressbook";
-    my $othertalk = Net::CardDAVTalk->new(
-        user => "other",
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/',
-        expandurl => 1,
-    );
-
-    xlog $self, "grant cassandane rights without the autosub flag";
-    $admintalk->setacl('user.other.#addressbooks.Default', 'cassandane' => 'lrs');
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
-
-    my $res = $jmap->CallMethods([
-        ['AddressBook/get', {
-            accountId => 'other',
-            properties => ['isSubscribed'],
-        }, 'R1'],
-    ]);
-    my $id = $res->[0][1]{list}[0]{id};
-    $self->assert_not_null($id);
-    $self->assert_equals(JSON::false, $res->[0][1]{list}[0]{isSubscribed});
-
-    xlog $self, "add the autosub flag '1' to the grant";
-    $admintalk->setacl('user.other.#addressbooks.Default', 'cassandane' => 'lrs1');
-    $self->assert_str_equals('ok', $admintalk->get_last_completion_response());
-
-    $res = $jmap->CallMethods([
-        ['AddressBook/get', {
-            accountId => 'other',
-            ids => [$id],
-            properties => ['isSubscribed'],
-        }, 'R1'],
-    ]);
-    $self->assert_equals(JSON::true, $res->[0][1]{list}[0]{isSubscribed});
+    $self->assert_addressbook_get_autosub('group:c1-all');
 }
