@@ -41,6 +41,7 @@ sub test_list_autosub_subscribed
     $imaptalk->subscribe("user.otheruser.autoshared") or die "subscribe: $@";
 
     my $subscribed = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
+    my $recursive = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
 
     $self->assert_list_autosub(
         $subscribed,
@@ -49,6 +50,15 @@ sub test_list_autosub_subscribed
             'user.otheruser.autoshared' => [ '\\Subscribed' ],
         },
         "LIST (SUBSCRIBED) shows the real and the flag-granted subscription",
+    );
+
+    $self->assert_list_autosub(
+        $recursive,
+        {
+            'INBOX.mine' => [ '\\Subscribed' ],
+            'user.otheruser.autoshared' => [ '\\Subscribed' ],
+        },
+        "... and RECURSIVEMATCH does not report it twice either",
     );
 }
 
@@ -66,6 +76,7 @@ sub test_list_autosub_after_unsubscribe
     my $subscribed = $imaptalk->list([qw(SUBSCRIBED)], "", "*");
     my $lsub = $imaptalk->lsub("", "*");
     my $returned = $imaptalk->list([qw()], "", "*", 'RETURN', [qw(SUBSCRIBED)]);
+    my $recursive = $imaptalk->list([qw(SUBSCRIBED RECURSIVEMATCH)], "", "*");
 
     $self->assert_list_autosub(
         $subscribed,
@@ -93,5 +104,17 @@ sub test_list_autosub_after_unsubscribe
             'user.otheruser.autoshared' => [ '\\Subscribed' ],
         },
         "RETURN (SUBSCRIBED) annotates the flag-granted folder",
+    );
+
+    # only LIST (SUBSCRIBED RECURSIVEMATCH) reaches
+    # recursivematch_autosub_cb; LSUB and LIST (SUBSCRIBED) above both
+    # route through subscribed_cb
+    $self->assert_list_autosub(
+        $recursive,
+        {
+            'INBOX.mine' => [ '\\Subscribed' ],
+            'user.otheruser.autoshared' => [ '\\Subscribed' ],
+        },
+        "RECURSIVEMATCH shows the flag-granted folder with no real subscription",
     );
 }
