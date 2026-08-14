@@ -1,69 +1,81 @@
 #!perl
 use Cassandane::Tiny;
 
-sub test_addressbook_set_autosub
-    ($self)
+# Subscribing and unsubscribing an autosub addressbook both succeed, but the
+# '1' right keeps isSubscribed true until the right itself goes away.
+sub test_addressbook_set_autosub ($self)
 {
-    my $jmap = $self->{jmap};
-    my $admintalk = $self->{adminstore}->get_client();
-    my $service = $self->{instance}->get_service("http");
+    my $jmap  = $self->default_user->jmap;
+    my $admin = $self->{adminstore}->get_client();
 
-    $admintalk->create("user.other");
-    $admintalk->setacl("user.other", admin => 'lrswipkxtecdan');
+    my $other = $self->{instance}->create_user('other');
+    my $abook = $other->addressbooks->default;
 
-    my $othertalk = Net::CardDAVTalk->new(
-        user => "other",
-        password => 'pass',
-        host => $service->host(),
-        port => $service->port(),
-        scheme => 'http',
-        url => '/',
-        expandurl => 1,
-    );
-
-    $admintalk->setacl('user.other.#addressbooks.Default',
-                       'cassandane' => 'lrs1');
-
-    my $res = $jmap->CallMethods([
-        ['AddressBook/get', {
-            accountId => 'other',
-            properties => ['isSubscribed'],
-        }, 'R1'],
-    ]);
-    my $id = $res->[0][1]{list}[0]{id};
-    $self->assert_equals(JSON::true, $res->[0][1]{list}[0]{isSubscribed});
+    $admin->setacl('user.other.#addressbooks.Default', cassandane => 'lrs1')
+        or die "setacl: $@";
 
     xlog $self, "subscribe for real, then unsubscribe: both must succeed";
-    $res = $jmap->CallMethods([
-        ['AddressBook/set', {
+    my $res = $jmap->request([
+        [ 'AddressBook/set', {
             accountId => 'other',
-            update => { $id => { isSubscribed => JSON::true } },
-        }, 'R1'],
-        ['AddressBook/set', {
+            update => { $abook->id => { isSubscribed => JSON::true } },
+        }, 'subscribe' ],
+        [ 'AddressBook/set', {
             accountId => 'other',
-            update => { $id => { isSubscribed => JSON::false } },
-        }, 'R2'],
-        ['AddressBook/get', {
-            accountId => 'other', ids => [$id],
-            properties => ['isSubscribed'],
-        }, 'R3'],
+            update => { $abook->id => { isSubscribed => JSON::false } },
+        }, 'unsubscribe' ],
+        [ 'AddressBook/get', {
+            accountId  => 'other',
+            ids        => [ $abook->id ],
+            properties => [ 'isSubscribed' ],
+        }, 'get' ],
     ]);
-    $self->assert(exists $res->[0][1]{updated}{$id});
-    $self->assert(exists $res->[1][1]{updated}{$id});
+
+    my $subscribe = $res->paragraph_by_client_id('subscribe')
+                        ->single('AddressBook/set')->arguments;
+    my $unsubscribe = $res->paragraph_by_client_id('unsubscribe')
+                          ->single('AddressBook/set')->arguments;
+    my $books = $res->paragraph_by_client_id('get')
+                    ->single('AddressBook/get')->arguments->{list};
+
+    $self->assert_cmp_deeply(
+        superhashof({ updated => { $abook->id => ignore() } }),
+        $subscribe,
+        "subscribing an autosub addressbook succeeds",
+    );
 
     xlog $self, "server reports the still-true effective state";
-    $self->assert_equals(JSON::true,
-        $res->[1][1]{updated}{$id}{isSubscribed});
-    $self->assert_equals(JSON::true, $res->[2][1]{list}[0]{isSubscribed});
+    $self->assert_cmp_deeply(
+        superhashof({
+            updated => { $abook->id => superhashof({ isSubscribed => jtrue() }) },
+        }),
+        $unsubscribe,
+        "unsubscribing succeeds but the '1' right keeps it subscribed",
+    );
+
+    $self->assert_cmp_deeply(
+        [ superhashof({ id => $abook->id, isSubscribed => jtrue() }) ],
+        $books,
+        "and AddressBook/get agrees",
+    );
 
     xlog $self, "removing the flag reveals the real (removed) entry";
-    $admintalk->setacl('user.other.#addressbooks.Default',
-                       'cassandane' => 'lrs');
-    $res = $jmap->CallMethods([
-        ['AddressBook/get', {
-            accountId => 'other', ids => [$id],
-            properties => ['isSubscribed'],
-        }, 'R1'],
+    $admin->setacl('user.other.#addressbooks.Default', cassandane => 'lrs')
+        or die "setacl: $@";
+
+    $res = $jmap->request([
+        [ 'AddressBook/get', {
+            accountId  => 'other',
+            ids        => [ $abook->id ],
+            properties => [ 'isSubscribed' ],
+        } ],
     ]);
-    $self->assert_equals(JSON::false, $res->[0][1]{list}[0]{isSubscribed});
+
+    $books = $res->single_sentence('AddressBook/get')->arguments->{list};
+
+    $self->assert_cmp_deeply(
+        [ superhashof({ id => $abook->id, isSubscribed => jfalse() }) ],
+        $books,
+        "without the '1' right the earlier unsubscribe takes effect",
+    );
 }
