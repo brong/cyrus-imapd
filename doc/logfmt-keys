@@ -255,6 +255,8 @@ ctl_mboxlist.action     which repair ctl_mboxlist made or would make
 ctl_mboxlist.dryrun     1 if ctl_mboxlist only reported what it would do
 dav.brief               the Brief preference a request asked for
 dav.collection          the DAV collection a request named
+dav.conflict.mbox       uniqueid of the mailbox holding a conflicting resource
+dav.conflict.resource   resource name of a conflicting resource in its collection
 dav.depth               the Depth a request asked to recurse to
 dav.if                  an If header, as the client sent it
 dav.if_schedule_tag_match  an If-Schedule-Tag-Match header, as the client sent it
