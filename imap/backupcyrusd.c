@@ -45,6 +45,7 @@
 #include "mboxlist.h"
 #include "proc.h"
 #include "cyrusdb.h"
+#include "charset.h"
 
 /* generated headers are not necessarily in current directory */
 #include "master/service.h"
@@ -266,6 +267,29 @@ struct file_item {
    char *fname;
 };
 
+/*
+ * A value as a JSON string, or as {"base64": ...} if it contains a NUL or
+ * isn't valid UTF-8.
+ */
+static json_t *json_value(const char *base, size_t len)
+{
+    if (!len) {
+        return json_string("");
+    }
+    if (!memchr(base, '\0', len)) {
+        json_t *jval = json_stringn(base, len);
+        if (jval) {
+            return jval;
+        }
+    }
+
+    struct buf b64 = BUF_INITIALIZER;
+    charset_encode(&b64, base, len, ENCODING_BASE64);
+    json_t *jval = json_pack("{s:s}", "base64", buf_cstring(&b64));
+    buf_free(&b64);
+    return jval;
+}
+
 static int _readone(const char *mailbox __attribute__((unused)),
                     uint32_t uid __attribute__((unused)),
                     const char *entry,
@@ -274,7 +298,12 @@ static int _readone(const char *mailbox __attribute__((unused)),
                     const struct annotate_metadata *mdata __attribute__((unused)),
                     void *rock)
 {
-    json_array_append_new((json_t *)rock, json_pack("[sss]", entry, userid, buf_cstring(value)));
+    json_array_append_new(
+        (json_t *) rock,
+        json_pack("[sso]",
+                  entry,
+                  userid,
+                  json_value(buf_base(value), buf_len(value))));
     return 0;
 }
 
@@ -287,12 +316,13 @@ static int _readone_uid(const char *mailbox __attribute__((unused)),
                         __attribute__((unused)),
                         void *rock)
 {
-    json_array_append_new((json_t *) rock,
-                          json_pack("[Isss]",
-                                    (json_int_t) uid,
-                                    entry,
-                                    userid,
-                                    buf_cstring(value)));
+    json_array_append_new(
+        (json_t *) rock,
+        json_pack("[Isso]",
+                  (json_int_t) uid,
+                  entry,
+                  userid,
+                  json_value(buf_base(value), buf_len(value))));
     return 0;
 }
 
@@ -396,7 +426,7 @@ static int _dumpone(void *rock,
                     const char *data,
                     size_t datalen)
 {
-    json_t *jval = json_stringn(data, datalen);
+    json_t *jval = json_value(data, datalen);
     if (!jval || json_object_setn_new((json_t *) rock, key, keylen, jval)) {
         return CYRUSDB_IOERROR;
     }
@@ -406,7 +436,7 @@ static int _dumpone(void *rock,
 /*
  * Sends a cyrusdb database as a JSON object of its keys and values, so the
  * content doesn't depend on the backend or on whether it is a file or a
- * directory.  Keys and values must be valid UTF-8.
+ * directory.  Keys must be valid UTF-8; values are as json_value().
  */
 static void send_db(const char *userid,
                     const char *name,
@@ -603,7 +633,8 @@ struct annot_item
  *  => OK or NO message
  *  (
  *    => DATA $uid.annotations $size $mtime $inode
- *    => $size bytes of JSON: [[entry, userid, value], ...]
+ *    => $size bytes of JSON: [[entry, userid, value], ...], each value a
+ *       string or {"base64": ...} if it has a NUL or isn't UTF-8
  *    => DONE $uid.annotations $sha1
  *  )
  *  => DONE FANNOT $uniqueid $jmapid
@@ -704,7 +735,8 @@ static int do_fannot()
  *
  *  "annotations" is every annotation in the mailbox as JSON
  *  [[uid, entry, userid, value], ...], for clients older than FANNOT.  It
- *  isn't in the STAT list.
+ *  isn't in the STAT list.  Annotation values here and in
+ *  "mailbox_annotations" are as in FANNOT.
  */
 static int do_fmeta()
 {
@@ -821,7 +853,8 @@ static int do_fmultistatus()
 }
 
 /*
- *  seen and sub are sent as JSON objects of the database's keys and values.
+ *  seen and sub are sent as JSON objects of the database's keys and values,
+ *  each value as in FANNOT.
  *
  *  META $slot $user
  *    => OK or NO message
