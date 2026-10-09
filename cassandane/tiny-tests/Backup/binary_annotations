@@ -13,6 +13,8 @@ sub test_binary_annotations
     my $nul = "Goodnight\0Irene";
     my $latin1 = "caf\xe9";
     my $b64 = sub ($v) { { base64 => encode_base64($v, '') } };
+    # mailbox annotations don't have a modseq, message annotations do
+    my $modseq = code(sub ($v) { $v > 0 });
 
     my $talk = $self->{store}->get_client();
     $self->make_message("Email 1") or die;
@@ -30,21 +32,21 @@ sub test_binary_annotations
     my $items = $self->_fetch_items($service, 'FANNOT', $servername,
                                     'cassandane', 'INBOX', 1);
     $self->assert_cmp_deeply(
-        bag(['/altsubject', '', $b64->($latin1)],
-            ['/comment', '', $b64->($nul)]),
+        bag(['/altsubject', '', $b64->($latin1), $modseq],
+            ['/comment', '', $b64->($nul), $modseq]),
         decode_json($items->{'1.annotations'}),
     );
 
     $items = $self->_fetch_items($service, 'FMETA', $servername, 'cassandane',
                                  'INBOX', 'mailbox_annotations', 'annotations');
     $self->assert_cmp_deeply(
-        superbagof(['/comment', '', $b64->($nul)]),
+        superbagof(['/comment', '', $b64->($nul), ignore()]),
         decode_json($items->{mailbox_annotations}),
     );
     $self->assert_cmp_deeply(
-        superbagof([0, '/comment', '', $b64->($nul)],
-                   [1, '/altsubject', '', $b64->($latin1)],
-                   [1, '/comment', '', $b64->($nul)]),
+        superbagof([0, '/comment', '', $b64->($nul), ignore()],
+                   [1, '/altsubject', '', $b64->($latin1), $modseq],
+                   [1, '/comment', '', $b64->($nul), $modseq]),
         decode_json($items->{annotations}),
     );
 }

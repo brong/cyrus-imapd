@@ -7,6 +7,7 @@ clients, is every annotation in the mailbox as JSON, and the seen and
 subscription databases are JSON objects of their keys and values.  A value
 that contains a NUL or isn't UTF-8 is sent as {"base64": ...}; previously
 annotation values were truncated at a NUL, or dropped if they weren't UTF-8.
+Each annotation now carries its modseq.
 
 
 Documentation:
