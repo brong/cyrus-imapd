@@ -39,6 +39,12 @@ sub test_message_annotations
         { map { $_ => decode_json($items->{$_}) } keys %$items },
     );
 
+    xlog $self, "FMETA still sends the raw annotations database on request";
+    $items = $self->_fetch_items($service, 'FMETA', $servername,
+                                 'cassandane', 'INBOX', 'annotations');
+    $self->assert_cmp_deeply(['annotations'], [keys %$items]);
+    $self->assert_num_gt(0, length $items->{annotations});
+
     xlog $self, "unchanged mailbox fetches nothing";
     $cmds = $self->_do_backup_logged($meta, $data, $service, $servername);
     $self->assert_cmp_deeply([], $self->_fannot_uids($cmds));
