@@ -278,6 +278,24 @@ static int _readone(const char *mailbox __attribute__((unused)),
     return 0;
 }
 
+static int _readone_uid(const char *mailbox __attribute__((unused)),
+                        uint32_t uid,
+                        const char *entry,
+                        const char *userid,
+                        const struct buf *value,
+                        const struct annotate_metadata *mdata
+                        __attribute__((unused)),
+                        void *rock)
+{
+    json_array_append_new((json_t *) rock,
+                          json_pack("[Isss]",
+                                    (json_int_t) uid,
+                                    entry,
+                                    userid,
+                                    buf_cstring(value)));
+    return 0;
+}
+
 static char *read_annot(const mbentry_t *mbentry)
 {
     json_t *jres = json_array();
@@ -291,6 +309,26 @@ static char *read_msg_annot(struct mailbox *mailbox, uint32_t uid)
 {
     json_t *jres = json_array();
     annotatemore_findall_mailbox(mailbox, uid, "*", 0, _readone, jres, 0);
+    char *res = json_array_size(jres) ? json_dumps(jres, JSON_COMPACT) : NULL;
+    json_decref(jres);
+    return res;
+}
+
+/*
+ * All the mailbox's annotations, mailbox (uid 0) and message alike, as
+ * [[uid, entry, userid, value], ...].
+ */
+static char *read_all_annot(struct mailbox *mailbox)
+{
+    json_t *jres = json_array();
+    annotatemore_findall_mailbox(mailbox, 0, "*", 0, _readone_uid, jres, 0);
+    annotatemore_findall_mailbox(mailbox,
+                                 ANNOTATE_ANY_UID,
+                                 "*",
+                                 0,
+                                 _readone_uid,
+                                 jres,
+                                 0);
     char *res = json_array_size(jres) ? json_dumps(jres, JSON_COMPACT) : NULL;
     json_decref(jres);
     return res;
@@ -664,9 +702,9 @@ static int do_fannot()
  *  )
  *  => DONE FMETA $uniqueid $jmapid
  *
- *  "annotations" is the raw annotations database, for clients older than
- *  FANNOT.  It isn't in the STAT list, and is NO if the database isn't a
- *  regular file.
+ *  "annotations" is every annotation in the mailbox as JSON
+ *  [[uid, entry, userid, value], ...], for clients older than FANNOT.  It
+ *  isn't in the STAT list.
  */
 static int do_fmeta()
 {
@@ -715,7 +753,9 @@ static int do_fmeta()
             send_file("index", NULL, mailbox_meta_fname(mailbox, META_INDEX), 1);
         }
         else if (!strcmp(buf_cstring(&item), "annotations")) {
-            send_file("annotations", NULL, mailbox_meta_fname(mailbox, META_ANNOTATIONS), 1);
+            char *base = read_all_annot(mailbox);
+            send_blob("annotations", NULL, base, 1);
+            free(base);
         }
         else if (!strcmp(buf_cstring(&item), "mailbox_annotations")) {
             send_annot(mailbox_mbentry(mailbox), NULL, 1);
