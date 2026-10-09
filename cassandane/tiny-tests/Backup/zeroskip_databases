@@ -1,0 +1,53 @@
+#!perl
+use Cassandane::Tiny;
+
+use JSON;
+
+# zeroskip databases are directories, so they can't be sent as files.
+sub test_zeroskip_databases
+    :want_service_backupcyrusd :needs_cyrusdb_zeroskip :NoStartInstances
+    ($self)
+{
+    $self->{instance}->{config}->set(
+        annotation_db => 'zeroskip',
+        seenstate_db => 'zeroskip',
+        subscription_db => 'zeroskip',
+    );
+    $self->_start_instances();
+
+    my $talk = $self->{store}->get_client();
+    $self->make_message("Email 1") or die;
+    $talk->select('INBOX');
+    $talk->store('1', 'annotation',
+                 ['/comment', ['value.shared', { Quote => 'msg' }]]);
+    $talk->setmetadata('INBOX', '/shared/comment', 'mbox');
+    $talk->subscribe('INBOX');
+
+    my $subdb = $self->{instance}->get_conf_user_file('cassandane', 'sub');
+    $self->assert(-d $subdb, "$subdb is a directory");
+    my $annotdb = $self->{instance}->folder_to_directory('INBOX')
+                . '/cyrus.annotations';
+    $self->assert(-d $annotdb, "$annotdb is a directory");
+
+    my ($meta, $data, $service, $servername) = $self->_backup_setup();
+
+    xlog $self, "sub is sent as a JSON object of its keys and values";
+    my $items = $self->_fetch_items($service, 'META', $servername,
+                                    'cassandane', 'sub');
+    $self->assert_cmp_deeply(
+        { "\x1fVER\x1f" => ignore(), NINBOX => ignore() },
+        decode_json($items->{sub}),
+    );
+
+    xlog $self, "backup succeeds and has the annotations";
+    $self->_do_backup($meta, $data, $service, $servername);
+    $self->assert_cmp_deeply(
+        bag(qw(header index mailbox_annotations annotations.1)),
+        $self->_fmeta_names($meta),
+    );
+
+    my $dbh = $self->_open_backup_db($meta);
+    my $metanames = $dbh->selectcol_arrayref("SELECT name FROM meta");
+    $dbh->disconnect;
+    $self->assert_cmp_deeply(supersetof('sub'), $metanames);
+}

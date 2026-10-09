@@ -74,7 +74,7 @@ sub test_upgrade_v5_state
         {}, $msg->guid);
     $dbh->disconnect;
 
-    $self->assert_num_equals(6, $dbversion);
+    $self->assert_num_equals(Cyrus::Backup::CurrentBackupVersion(), $dbversion);
     $self->assert_num_equals(1, $count, 'message survived the upgrade');
     $self->assert(!$self->_has_indexed_deleted($meta),
                   'compact dropped the indexed.deleted column');

@@ -78,6 +78,7 @@ CREATE TABLE indexed (
   folderid INTEGER NOT NULL,
   uid INTEGER NOT NULL,
   fileid INTEGER NOT NULL,
+  modseq INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (folderid, uid)
 );
   },
@@ -103,6 +104,16 @@ sub new {
   my $status = $dbh->selectrow_hashref("SELECT * FROM status");
   $status ||= { version => Cyrus::Backup::CurrentBackupVersion() }; # no row
   $status->{version} ||= 1; # old style DB
+
+  # version 7 added indexed.modseq.  Add it now rather than waiting for a
+  # compact, so that annotations aren't refetched on every backup until
+  # then.  Every message has modseq 0, so the next backup fetches them all.
+  if ($status->{version} < 7) {
+    my $cols = $dbh->selectall_arrayref("PRAGMA table_info(indexed)", { Slice => {} });
+    unless (grep { $_->{name} eq 'modseq' } @$cols) {
+      $dbh->do("ALTER TABLE indexed ADD COLUMN modseq INTEGER NOT NULL DEFAULT 0");
+    }
+  }
 
   if ($args{Unsafe}) {
     $dbh->do("PRAGMA synchronous = OFF");

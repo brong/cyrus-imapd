@@ -36,7 +36,7 @@ our $LOGGER_CB = sub { 'Cyrus::NullLogger' };
 
 sub logger { $LOGGER_CB->() }
 
-our $BackupVersion = 6;
+our $BackupVersion = 7;
 # UPDATE THIS WHENEVER A NEW CYRUS INDEX MINOR_VERSION IS CREATED
 our $MAX_INDEXVERSION = 20;
 
@@ -190,7 +190,7 @@ sub BackupUser {
 
     # OK, the folder is dirty - we need to fetch everything:
     my %content;
-    my $res = iofiles($IO, ['FMETA', $ServerName, $CyrusName, $FolderName, 'header', 'index', 'annotations', 'mailbox_annotations'], sub {
+    my $res = iofiles($IO, ['FMETA', $ServerName, $CyrusName, $FolderName, 'header', 'index', 'mailbox_annotations'], sub {
       my $name = shift;
       $content{$name} = \@_;
     });
@@ -225,12 +225,37 @@ sub BackupUser {
         while (my @batch = splice(@uids, 0, 1024)) {
           iofiles($IO, ['FDATA', $ServerName, $CyrusName, $FolderName, @batch], $cb);
         }
+      }, sub {
+        my ($changed, $removed) = @_;
+
+        # a uid with no annotations gets no DATA, so is removed below
+        my %gone = map { $_ => 1 } @$changed, @$removed;
+        my $cb = sub {
+          my ($file, $fh, $size, $mtime, $inode, $sha1) = @_;
+          my ($uid) = $file =~ m/^(\d+)\.annotations$/
+            or die "unexpected FANNOT item $file\n";
+          delete $gone{$uid};
+          my $name = "folders/$uniqueid/cyrus.annotations.$uid";
+          my $cur = $state->get($name);
+          return if $cur and $cur->{sha1} and $cur->{sha1} eq $sha1;
+          $tar->addfile($fh, $name, $sha1, $size, $mtime, $inode);
+        };
+
+        my @uids = @$changed;
+        while (my @batch = splice(@uids, 0, 1024)) {
+          iofiles($IO, ['FANNOT', $ServerName, $CyrusName, $FolderName, @batch], $cb);
+        }
+
+        $tar->delfile("folders/$uniqueid/cyrus.annotations.$_")
+          for sort { $a <=> $b } keys %gone;
       });
 
       $tar->addfile($fh, "folders/$uniqueid/cyrus.$name", $sha1, $size, $mtime, $inode);
     }
 
-    # then add the other files if they've changed, or remove them if they're gone
+    # then add the other files if they've changed, or remove them if they're gone.
+    # 'annotations' is the whole annotations database, which is no longer
+    # fetched, so this removes it from older backups.
     foreach my $name ('header', 'annotations', 'mailbox_annotations') {
       if ($content{$name}) {
         my ($fh, $size, $mtime, $inode, $sha1) = @{$content{$name}};
@@ -612,12 +637,17 @@ sub qfn {
 
 # Parse an index file, optionally also fetching message files via a callback.
 # updates the indexed table in the state database.
+#
+# $annotsub, if given, is called as $annotsub->(\@changed, \@removed) before
+# the state is updated: @changed are the uids which are new or whose modseq
+# has risen since the last parse, @removed the uids which have gone.
 sub ParseIndex {
   my $FolderName = shift;
   my $uniqueid = shift;
   my $fh = shift;
   my $state = shift;
   my $missingsub = shift;
+  my $annotsub = shift;
 
   my $dbh = $state->dbh();
   my $folderid = $state->folderid($uniqueid);
@@ -628,6 +658,7 @@ sub ParseIndex {
   my $o_uid = $index->record_offset_for('Uid');
   my $o_sysflags = $index->record_offset_for('SystemFlags');
   my $o_guid = $index->record_offset_for('MessageGuid');
+  my $o_modseq = $index->record_offset_for('Modseq');
 
   unless ($index) {
     die "Failed to read index for $FolderName ($uniqueid)\n";
@@ -638,7 +669,7 @@ sub ParseIndex {
     die "Don't know how to handle indexes with version $index->{version} for $FolderName ($uniqueid)\n";
   }
 
-  my $sth = $dbh->prepare("SELECT uid,fileid FROM indexed WHERE folderid = ? ORDER BY uid ASC");
+  my $sth = $dbh->prepare("SELECT uid,fileid,modseq FROM indexed WHERE folderid = ? ORDER BY uid ASC");
   $sth->execute($folderid);
 
   # scan through the database and the index file in step
@@ -646,6 +677,7 @@ sub ParseIndex {
   # track changes to be made.
   my @todel;
   my @toadd;
+  my @tomodseq;
 
   my $record = $index->next_record_raw();
   my $dbitem = $sth->fetchrow_arrayref();
@@ -663,6 +695,9 @@ sub ParseIndex {
 
     # 1) they both exist and are the same,
     if ($dbitem and $record and $dbitem->[0] == $uid) {
+      my $modseq = unpack('Q>', substr($record, $o_modseq, 8));
+      push @tomodseq, [$uid, $modseq] if $modseq > $dbitem->[2];
+
       # move forward (both, since they matched)
       $record = $index->next_record_raw(); 
       $uid = $record ? unpack('N', substr($record, $o_uid, 4)) : undef;
@@ -677,7 +712,8 @@ sub ParseIndex {
       my $sysflags = unpack('N', substr($record, $o_sysflags, 4));
       unless ($sysflags & (1<<30)) { # unlinked
         $guid = unpack('H40', substr($record, $o_guid, 20));
-        push @toadd, [$uid, $guid];
+        my $modseq = unpack('Q>', substr($record, $o_modseq, 8));
+        push @toadd, [$uid, $guid, $modseq];
       }
 
       # move forward
@@ -702,6 +738,21 @@ sub ParseIndex {
 
   $sth->finish();
 
+  if ($annotsub and (@toadd or @tomodseq or @todel)) {
+    my @changed = sort { $a <=> $b } map { $_->[0] } @toadd, @tomodseq;
+    $annotsub->(\@changed, \@todel);
+  }
+
+  if (@tomodseq) {
+    my $sth = $dbh->prepare("UPDATE indexed SET modseq = ? WHERE folderid = ? AND uid = ?");
+    foreach my $item (@tomodseq) {
+      my ($uid, $modseq) = @$item;
+      unless ($sth->execute($modseq, $folderid, $uid)) {
+        die "failed to update DB: " . $dbh->errstr;
+      }
+    }
+  }
+
   if (@todel) {
     my $sth = $dbh->prepare("DELETE FROM indexed WHERE folderid = ? AND uid = ?");
     foreach my $need_delete (@todel) {
@@ -716,8 +767,8 @@ sub ParseIndex {
     # NULL with no default, so keep naming it until the next compact rewrites
     # the state with the current schema
     my $sth = $state->{version} < 6
-      ? $dbh->prepare("INSERT INTO indexed (folderid, uid, fileid, deleted) VALUES (?, ?, ?, 0)")
-      : $dbh->prepare("INSERT INTO indexed (folderid, uid, fileid) VALUES (?, ?, ?)");
+      ? $dbh->prepare("INSERT INTO indexed (folderid, uid, fileid, modseq, deleted) VALUES (?, ?, ?, ?, 0)")
+      : $dbh->prepare("INSERT INTO indexed (folderid, uid, fileid, modseq) VALUES (?, ?, ?, ?)");
     my %need;
     foreach my $need_create (@toadd) {
       my ($uid, $guid) = @$need_create;
@@ -728,12 +779,12 @@ sub ParseIndex {
     }
     $missingsub->(\%need) if (keys %need and $missingsub);
     foreach my $need_create (@toadd) {
-      my ($uid, $guid) = @$need_create;
+      my ($uid, $guid, $modseq) = @$need_create;
       my $fileid = $state->fileid($guid);
       unless ($fileid) {
         die "no file for $uniqueid $uid ($guid) and no way to get it\n";
       }
-      unless ($sth->execute($folderid, $uid, $fileid)) {
+      unless ($sth->execute($folderid, $uid, $fileid, $modseq)) {
         die "failed to add to DB: " . $dbh->errstr;
       }
     }

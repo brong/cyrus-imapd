@@ -1,0 +1,32 @@
+Description:
+
+backupcyrusd now works with directory-based cyrusdb backends such as zeroskip.
+Message annotations are fetched per message with the new FANNOT command, which
+replaces the raw per-mailbox annotations database.  The seen and subscription
+databases are sent as JSON objects of their keys and values, whatever their
+backend.
+
+
+Documentation:
+
+The protocol is described in comments in imap/backupcyrusd.c.
+
+
+Config changes:
+
+None.
+
+
+Upgrade instructions:
+
+Upgrade backupcyrusd and the Cyrus::Backup client together.  The backup state
+version is now 7; older states gain the new indexed.modseq column on their next
+backup.  That backup fetches annotations for every message and replaces the
+seen and sub files with their JSON form.  Backups taken before this change keep
+a raw cyrus.annotations file for each folder, and the client removes it the
+next time the folder changes.
+
+
+GitHub issue:
+
+None.
