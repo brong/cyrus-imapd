@@ -663,6 +663,10 @@ static int do_fannot()
  *    => DONE $file $sha1
  *  )
  *  => DONE FMETA $uniqueid $jmapid
+ *
+ *  "annotations" is the raw annotations database, for clients older than
+ *  FANNOT.  It isn't in the STAT list, and is NO if the database isn't a
+ *  regular file.
  */
 static int do_fmeta()
 {
@@ -709,6 +713,9 @@ static int do_fmeta()
         }
         else if (!strcmp(buf_cstring(&item), "index")) {
             send_file("index", NULL, mailbox_meta_fname(mailbox, META_INDEX), 1);
+        }
+        else if (!strcmp(buf_cstring(&item), "annotations")) {
+            send_file("annotations", NULL, mailbox_meta_fname(mailbox, META_ANNOTATIONS), 1);
         }
         else if (!strcmp(buf_cstring(&item), "mailbox_annotations")) {
             send_annot(mailbox_mbentry(mailbox), NULL, 1);
