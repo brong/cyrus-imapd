@@ -296,15 +296,15 @@ static int _readone(const char *mailbox __attribute__((unused)),
                     const char *entry,
                     const char *userid,
                     const struct buf *value,
-                    const struct annotate_metadata *mdata __attribute__((unused)),
+                    const struct annotate_metadata *mdata,
                     void *rock)
 {
-    json_array_append_new(
-        (json_t *) rock,
-        json_pack("[sso]",
-                  entry,
-                  userid,
-                  json_value(buf_base(value), buf_len(value))));
+    json_array_append_new((json_t *) rock,
+                          json_pack("[ssoI]",
+                                    entry,
+                                    userid,
+                                    json_value(buf_base(value), buf_len(value)),
+                                    (json_int_t) mdata->modseq));
     return 0;
 }
 
@@ -313,17 +313,16 @@ static int _readone_uid(const char *mailbox __attribute__((unused)),
                         const char *entry,
                         const char *userid,
                         const struct buf *value,
-                        const struct annotate_metadata *mdata
-                        __attribute__((unused)),
+                        const struct annotate_metadata *mdata,
                         void *rock)
 {
-    json_array_append_new(
-        (json_t *) rock,
-        json_pack("[Isso]",
-                  (json_int_t) uid,
-                  entry,
-                  userid,
-                  json_value(buf_base(value), buf_len(value))));
+    json_array_append_new((json_t *) rock,
+                          json_pack("[IssoI]",
+                                    (json_int_t) uid,
+                                    entry,
+                                    userid,
+                                    json_value(buf_base(value), buf_len(value)),
+                                    (json_int_t) mdata->modseq));
     return 0;
 }
 
@@ -347,7 +346,7 @@ static char *read_msg_annot(struct mailbox *mailbox, uint32_t uid)
 
 /*
  * All the mailbox's annotations, mailbox (uid 0) and message alike, as
- * [[uid, entry, userid, value], ...].
+ * [[uid, entry, userid, value, modseq], ...].
  */
 static char *read_all_annot(struct mailbox *mailbox)
 {
@@ -634,8 +633,8 @@ struct annot_item
  *  => OK or NO message
  *  (
  *    => DATA $uid.annotations $size $mtime $inode
- *    => $size bytes of JSON: [[entry, userid, value], ...], each value a
- *       string or {"base64": ...} if it has a NUL or isn't UTF-8
+ *    => $size bytes of JSON: [[entry, userid, value, modseq], ...], each
+ *       value a string or {"base64": ...} if it has a NUL or isn't UTF-8
  *    => DONE $uid.annotations $sha1
  *  )
  *  => DONE FANNOT $uniqueid $jmapid
@@ -735,9 +734,9 @@ static int do_fannot()
  *  => DONE FMETA $uniqueid $jmapid
  *
  *  "annotations" is every annotation in the mailbox as JSON
- *  [[uid, entry, userid, value], ...], for clients older than FANNOT.  It
- *  isn't in the STAT list.  Annotation values here and in
- *  "mailbox_annotations" are as in FANNOT.
+ *  [[uid, entry, userid, value, modseq], ...], for clients older than
+ *  FANNOT.  It isn't in the STAT list.  "mailbox_annotations" rows and
+ *  values are as in FANNOT.
  */
 static int do_fmeta()
 {

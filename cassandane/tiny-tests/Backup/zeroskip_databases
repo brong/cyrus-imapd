@@ -43,7 +43,8 @@ sub test_zeroskip_databases
     $items = $self->_fetch_items($service, 'FMETA', $servername,
                                  'cassandane', 'INBOX', 'annotations');
     $self->assert_cmp_deeply(
-        bag([0, '/comment', '', 'mbox'], [1, '/comment', '', 'msg']),
+        bag([0, '/comment', '', 'mbox', ignore()],
+            [1, '/comment', '', 'msg', code(sub ($v) { $v > 0 })]),
         decode_json($items->{annotations}),
     );
 
