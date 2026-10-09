@@ -1,10 +1,10 @@
 Description:
 
 backupcyrusd now works with directory-based cyrusdb backends such as zeroskip.
-Message annotations are fetched per message with the new FANNOT command; FMETA
-still sends the raw per-mailbox annotations database when asked, for older
-clients.  The seen and subscription databases are sent as JSON objects of their
-keys and values, whatever their backend.
+Message annotations are fetched per message with the new FANNOT command.
+Databases are never sent raw: FMETA's "annotations" item, kept for older
+clients, is every annotation in the mailbox as JSON, and the seen and
+subscription databases are JSON objects of their keys and values.
 
 
 Documentation:
@@ -20,15 +20,14 @@ None.
 Upgrade instructions:
 
 Upgrade backupcyrusd before the Cyrus::Backup client: older clients keep
-working against the new server, but the new client needs FANNOT.  Don't move
-annotation_db, seenstate_db or subscription_db to zeroskip until both are
-upgraded.  Once the server is upgraded, backups store seen and sub in their
-JSON form, whichever client takes them.
+working against the new server, whatever the database backends, but the new
+client needs FANNOT.  Once the server is upgraded, backups store annotations,
+seen and sub in their JSON form, whichever client takes them.
 
 The backup state version is now 7; older states gain the new indexed.modseq
 column on their next backup.  The first time each folder changes after that,
 the client fetches annotations for all its messages and removes the folder's
-raw cyrus.annotations file from the backup.
+whole-mailbox cyrus.annotations file from the backup.
 
 
 GitHub issue:

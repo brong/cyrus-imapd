@@ -39,6 +39,14 @@ sub test_zeroskip_databases
         decode_json($items->{sub}),
     );
 
+    xlog $self, "FMETA sends the annotations database as JSON";
+    $items = $self->_fetch_items($service, 'FMETA', $servername,
+                                 'cassandane', 'INBOX', 'annotations');
+    $self->assert_cmp_deeply(
+        bag([0, '/comment', '', 'mbox'], [1, '/comment', '', 'msg']),
+        decode_json($items->{annotations}),
+    );
+
     xlog $self, "backup succeeds and has the annotations";
     $self->_do_backup($meta, $data, $service, $servername);
     $self->assert_cmp_deeply(
