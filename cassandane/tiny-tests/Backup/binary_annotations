@@ -1,0 +1,50 @@
+#!perl
+use Cassandane::Tiny;
+
+use JSON;
+use MIME::Base64 qw(encode_base64);
+
+# Annotation values that can't be JSON strings, because they contain a NUL or
+# aren't UTF-8, are sent as {"base64": ...}.
+sub test_binary_annotations
+    :want_service_backupcyrusd
+    ($self)
+{
+    my $nul = "Goodnight\0Irene";
+    my $latin1 = "caf\xe9";
+    my $b64 = sub ($v) { { base64 => encode_base64($v, '') } };
+
+    my $talk = $self->{store}->get_client();
+    $self->make_message("Email 1") or die;
+    $talk->select('INBOX');
+    $talk->store('1', 'annotation', ['/comment', ['value.shared', $nul]]);
+    $self->assert_str_equals('ok', $talk->get_last_completion_response());
+    $talk->store('1', 'annotation',
+                 ['/altsubject', ['value.shared', { Literal => $latin1 }]]);
+    $self->assert_str_equals('ok', $talk->get_last_completion_response());
+    $talk->setmetadata('INBOX', '/shared/comment', $nul);
+    $self->assert_str_equals('ok', $talk->get_last_completion_response());
+
+    my (undef, undef, $service, $servername) = $self->_backup_setup();
+
+    my $items = $self->_fetch_items($service, 'FANNOT', $servername,
+                                    'cassandane', 'INBOX', 1);
+    $self->assert_cmp_deeply(
+        bag(['/altsubject', '', $b64->($latin1)],
+            ['/comment', '', $b64->($nul)]),
+        decode_json($items->{'1.annotations'}),
+    );
+
+    $items = $self->_fetch_items($service, 'FMETA', $servername, 'cassandane',
+                                 'INBOX', 'mailbox_annotations', 'annotations');
+    $self->assert_cmp_deeply(
+        superbagof(['/comment', '', $b64->($nul)]),
+        decode_json($items->{mailbox_annotations}),
+    );
+    $self->assert_cmp_deeply(
+        superbagof([0, '/comment', '', $b64->($nul)],
+                   [1, '/altsubject', '', $b64->($latin1)],
+                   [1, '/comment', '', $b64->($nul)]),
+        decode_json($items->{annotations}),
+    );
+}

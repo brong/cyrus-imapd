@@ -4,7 +4,9 @@ backupcyrusd now works with directory-based cyrusdb backends such as zeroskip.
 Message annotations are fetched per message with the new FANNOT command.
 Databases are never sent raw: FMETA's "annotations" item, kept for older
 clients, is every annotation in the mailbox as JSON, and the seen and
-subscription databases are JSON objects of their keys and values.
+subscription databases are JSON objects of their keys and values.  A value
+that contains a NUL or isn't UTF-8 is sent as {"base64": ...}; previously
+annotation values were truncated at a NUL, or dropped if they weren't UTF-8.
 
 
 Documentation:
