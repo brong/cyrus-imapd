@@ -44,6 +44,7 @@
 #include "xstrlcpy.h"
 #include "mboxlist.h"
 #include "proc.h"
+#include "cyrusdb.h"
 
 /* generated headers are not necessarily in current directory */
 #include "master/service.h"
@@ -67,6 +68,7 @@ const int config_need_data = CONFIG_NEED_PARTITION_DATA;
 static struct namespace bcd_namespace;
 
 /* Functions */
+static int do_fannot();
 static int do_fdata();
 static int do_fmeta();
 static int do_fmultistatus();
@@ -276,7 +278,6 @@ static int _readone(const char *mailbox __attribute__((unused)),
     return 0;
 }
 
-
 static char *read_annot(const mbentry_t *mbentry)
 {
     json_t *jres = json_array();
@@ -286,18 +287,37 @@ static char *read_annot(const mbentry_t *mbentry)
     return res;
 }
 
-static void send_annot(const mbentry_t *mbentry, const char *mboxname, int do_data)
+static char *read_msg_annot(struct mailbox *mailbox, uint32_t uid)
 {
-    const char *name = "mailbox_annotations";
-    char *base = read_annot(mbentry);
+    json_t *jres = json_array();
+    annotatemore_findall_mailbox(mailbox, uid, "*", 0, _readone, jres, 0);
+    char *res = json_array_size(jres) ? json_dumps(jres, JSON_COMPACT) : NULL;
+    json_decref(jres);
+    return res;
+}
+
+/*
+ * Sends generated content as if it were a file.  The mtime is 0 and the
+ * inode is derived from the content guid, so a STAT changes iff the
+ * content does.  A NULL base is reported as empty.
+ */
+static void send_blob(const char *name,
+                      const char *mboxname,
+                      const char *base,
+                      int do_data)
+{
     if (!base) {
-        if (do_data) prot_puts(bcd_out, "NO empty mailbox_annotations\n");
+        if (!do_data) {
+            return;
+        }
+        prot_puts(bcd_out, "NO empty ");
+        puturistring(bcd_out, name);
+        prot_putc('\n', bcd_out);
         return;
     }
     size_t len = strlen(base);
     struct message_guid guid = MESSAGE_GUID_INITIALIZER;
-    message_guid_generate(&guid, base, strlen(base));
-    // synthetic inode
+    message_guid_generate(&guid, base, len);
     char guidbuf[MESSAGE_GUID_SIZE];
     message_guid_export(&guid, guidbuf);
     long unsigned ino = *((uint16_t *)(guidbuf));
@@ -321,6 +341,86 @@ static void send_annot(const mbentry_t *mbentry, const char *mboxname, int do_da
         puturistring(bcd_out, name);
         prot_printf(bcd_out, " %lu %lu %lu\n", len, mtime, ino);
     }
+}
+
+static void send_annot(const mbentry_t *mbentry,
+                       const char *mboxname,
+                       int do_data)
+{
+    char *base = read_annot(mbentry);
+    send_blob("mailbox_annotations", mboxname, base, do_data);
+    free(base);
+}
+
+static int _dumpone(void *rock,
+                    const char *key,
+                    size_t keylen,
+                    const char *data,
+                    size_t datalen)
+{
+    json_t *jval = json_stringn(data, datalen);
+    if (!jval || json_object_setn_new((json_t *) rock, key, keylen, jval)) {
+        return CYRUSDB_IOERROR;
+    }
+    return 0;
+}
+
+/*
+ * Sends a cyrusdb database as a JSON object of its keys and values, so the
+ * content doesn't depend on the backend or on whether it is a file or a
+ * directory.  Keys and values must be valid UTF-8.
+ */
+static void send_db(const char *userid,
+                    const char *name,
+                    const char *backend,
+                    const char *fname,
+                    int do_data)
+{
+    struct stat sbuf;
+
+    if (!fname || stat(fname, &sbuf)) {
+        if (!do_data) {
+            return; // quiet if no file
+        }
+        prot_printf(bcd_out, "NO no such file ");
+        puturistring(bcd_out, name);
+        prot_putc('\n', bcd_out);
+        return;
+    }
+
+    struct db *db = NULL;
+    json_t *jres = json_object();
+    char *base = NULL;
+    int r = cyrusdb_open(backend, fname, 0, &db);
+    if (!r) {
+        r = cyrusdb_foreach(db, "", 0, NULL, _dumpone, jres, NULL);
+    }
+    if (db) {
+        cyrusdb_close(db);
+    }
+    if (!r) {
+        base = json_dumps(jres, JSON_COMPACT);
+        if (!base) {
+            r = CYRUSDB_INTERNAL;
+        }
+    }
+    json_decref(jres);
+
+    if (r) {
+        xsyslog_ev(LOG_ERR, "backup.db.failed",
+                   lf_s("u.username", userid),
+                   lf_s("backup.item", name),
+                   lf_s("error", cyrusdb_strerror(r)));
+        if (!do_data) {
+            return;
+        }
+        prot_puts(bcd_out, "NO failed to read database ");
+        puturistring(bcd_out, name);
+        prot_putc('\n', bcd_out);
+        return;
+    }
+
+    send_blob(name, NULL, base, do_data);
     free(base);
 }
 
@@ -332,7 +432,7 @@ static void send_file(const char *name, const char *mboxname, const char *fname,
 {
     struct stat sbuf;
 
-    if (!fname || stat(fname, &sbuf)) {
+    if (!fname || stat(fname, &sbuf) || !S_ISREG(sbuf.st_mode)) {
         if (!do_data) return; // quiet if no file
         prot_printf(bcd_out, "NO no such file ");
         puturistring(bcd_out, name);
@@ -454,12 +554,105 @@ static int do_fdata()
     return c;
 }
 
+struct annot_item
+{
+    char *name;
+    char *json;
+};
+
+/*
+ *  FANNOT $slot $user $folder @uids
+ *  => OK or NO message
+ *  (
+ *    => DATA $uid.annotations $size $mtime $inode
+ *    => $size bytes of JSON: [[entry, userid, value], ...]
+ *    => DONE $uid.annotations $sha1
+ *  )
+ *  => DONE FANNOT $uniqueid $jmapid
+ *
+ *  A uid with no annotations gets "NO empty $uid.annotations" instead.
+ *  Any annotation change bumps the message's modseq, so clients need only
+ *  ask for uids whose modseq has changed since the last backup.
+ */
+static int do_fannot()
+{
+    static struct buf user;
+    static struct buf folder;
+    static struct buf item;
+
+    int c = geturistring(bcd_in, bcd_out, &user);
+    if (c == EOF) {
+        return c;
+    }
+    if (c != ' ') {
+        prot_printf(bcd_out, "NO missing user\n");
+        return c;
+    }
+
+    c = geturistring(bcd_in, bcd_out, &folder);
+    if (c == EOF) {
+        return c;
+    }
+
+    mbname_t *mbname = mbname_from_extname(buf_cstring(&folder),
+                                           &bcd_namespace,
+                                           buf_cstring(&user));
+
+    struct mailbox *mailbox = NULL;
+    int r = mailbox_open_irl(mbname_intname(mbname), &mailbox);
+    if (r) {
+        prot_printf(bcd_out, "NO no such folder ");
+        puturistring(bcd_out, buf_cstring(&folder));
+        prot_putc('\n', bcd_out);
+        mbname_free(&mbname);
+        return c;
+    }
+
+    prot_puts(bcd_out, "OK\n");
+
+    // read under the index lock, send after releasing it
+    ptrarray_t items = PTRARRAY_INITIALIZER;
+    while (c == ' ') {
+        c = getword(bcd_in, &item);
+        struct annot_item *annot = xzmalloc(sizeof(struct annot_item));
+        annot->name = strconcat(buf_cstring(&item), ".annotations", NULL);
+        const char *end = NULL;
+        uint32_t uid = 0;
+        if (!parseuint32(buf_cstring(&item), &end, &uid) && !*end && uid) {
+            annot->json = read_msg_annot(mailbox, uid);
+        }
+        ptrarray_append(&items, annot);
+    }
+
+    mailbox_unlock_index(mailbox, NULL);
+
+    for (int i = 0; i < ptrarray_size(&items); i++) {
+        struct annot_item *annot = ptrarray_nth(&items, i);
+        send_blob(annot->name, NULL, annot->json, 1);
+        free(annot->name);
+        free(annot->json);
+        free(annot);
+    }
+    ptrarray_fini(&items);
+
+    prot_printf(bcd_out, "DONE FANNOT ");
+    puturistring(bcd_out, mailbox_uniqueid(mailbox));
+    prot_putc(' ', bcd_out);
+    puturistring(bcd_out, mailbox_jmapid(mailbox));
+    prot_putc('\n', bcd_out);
+
+    mailbox_close(&mailbox);
+    mbname_free(&mbname);
+
+    return c;
+}
+
 /*
  * FMETA $slot $user $folder
  *  => OK or NO message
  *  => STAT header $size $mtime $inode
  *  => STAT index $size $mtime $inode
- *  => STAT annotations $size $mtime $inode
+ *  => STAT mailbox_annotations $size $mtime $inode
  *  => DONE FMETA $uniqueid $jmapid
  *
  * FMETA $slot $user $folder @files
@@ -505,7 +698,6 @@ static int do_fmeta()
     if (c != ' ') {
         send_file("header", NULL, mailbox_meta_fname(mailbox, META_HEADER), 0);
         send_file("index", NULL, mailbox_meta_fname(mailbox, META_INDEX), 0);
-        send_file("annotations", NULL, mailbox_meta_fname(mailbox, META_ANNOTATIONS), 0);
         send_annot(mailbox_mbentry(mailbox), NULL, 0);
     }
 
@@ -517,9 +709,6 @@ static int do_fmeta()
         }
         else if (!strcmp(buf_cstring(&item), "index")) {
             send_file("index", NULL, mailbox_meta_fname(mailbox, META_INDEX), 1);
-        }
-        else if (!strcmp(buf_cstring(&item), "annotations")) {
-            send_file("annotations", NULL, mailbox_meta_fname(mailbox, META_ANNOTATIONS), 1);
         }
         else if (!strcmp(buf_cstring(&item), "mailbox_annotations")) {
             send_annot(mailbox_mbentry(mailbox), NULL, 1);
@@ -552,7 +741,6 @@ static int one_status(const mbentry_t *mbentry, void *rock)
     prot_putc('\n', bcd_out);
     send_file("header", extname, mbentry_metapath(mbentry, META_HEADER, 0), 0);
     send_file("index", extname, mbentry_metapath(mbentry, META_INDEX, 0), 0);
-    send_file("annotations", extname, mbentry_metapath(mbentry, META_ANNOTATIONS, 0), 0);
     send_annot(mbentry, extname, 0);
     mbname_free(&mbname);
     return 0;
@@ -565,7 +753,6 @@ static int one_status(const mbentry_t *mbentry, void *rock)
  *      => FOLDER $name $uniqueid $jmapid
  *      => STAT $name header $size $mtime $inode
  *      => STAT $name index $size $mtime $inode
- *      => STAT $name annotations $size $mtime $inode
  *      => STAT $name mailbox_annotations $size $mtime $inode
  *    )
  *    => DONE FMULTISTATUS
@@ -587,6 +774,8 @@ static int do_fmultistatus()
 }
 
 /*
+ *  seen and sub are sent as JSON objects of the database's keys and values.
+ *
  *  META $slot $user
  *    => OK or NO message
  *    => STAT seen $size $mtime $inode
@@ -607,6 +796,8 @@ static int do_meta()
     static struct buf user;
     static struct buf item;
     char *fname;
+    const char *seendb = config_getstring(IMAPOPT_SEENSTATE_DB);
+    const char *subdb = config_getstring(IMAPOPT_SUBSCRIPTION_DB);
 
     int c = geturistring(bcd_in, bcd_out, &user);
     if (c == EOF) return c;
@@ -618,10 +809,10 @@ static int do_meta()
     // case: want meta info
     if (c != ' ') {
         fname = user_hash_meta(userid, "seen");
-        send_file("seen", NULL, fname, 0);
+        send_db(userid, "seen", seendb, fname, 0);
         free(fname);
         fname = user_hash_meta(userid, "sub");
-        send_file("sub", NULL, fname, 0);
+        send_db(userid, "sub", subdb, fname, 0);
         free(fname);
     }
 
@@ -630,12 +821,12 @@ static int do_meta()
         c = getword(bcd_in, &item);
         if (!strcmp(buf_cstring(&item), "seen")) {
             fname = user_hash_meta(userid, "seen");
-            send_file("seen", NULL, fname, 1);
+            send_db(userid, "seen", seendb, fname, 1);
             free(fname);
         }
         else if (!strcmp(buf_cstring(&item), "sub")) {
             fname = user_hash_meta(userid, "sub");
-            send_file("sub", NULL, fname, 1);
+            send_db(userid, "sub", subdb, fname, 1);
             free(fname);
         }
     }
@@ -726,7 +917,10 @@ static void cmdloop(void)
             continue;
         }
 
-        if (!strcasecmp(cstr, "FDATA")) {
+        if (!strcasecmp(cstr, "FANNOT")) {
+            c = do_fannot();
+        }
+        else if (!strcasecmp(cstr, "FDATA")) {
             c = do_fdata();
         }
         else if (!strcasecmp(cstr, "FMETA")) {

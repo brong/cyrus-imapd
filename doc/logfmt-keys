@@ -94,6 +94,7 @@ send.time               when the message was actually sent
 ### per-subsystem
 
 annot.entry             an annotation entry name
+backup.item             the name of a per-user item in the backup protocol, e.g. seen or sub
 cal.organizer           a calendar component's ORGANIZER
 cal.tzid                an iCalendar time zone identifier
 cal.uid                 a calendar component's iCalendar UID

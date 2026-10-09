@@ -1,0 +1,72 @@
+#!perl
+use Cassandane::Tiny;
+
+use JSON;
+use Cyrus::Backup;
+use Cyrus::Backup::Restore;
+
+# Message annotations are backed up per uid, and only fetched for messages
+# whose modseq has risen since the last backup.
+sub test_message_annotations
+    :want_service_backupcyrusd
+    ($self)
+{
+    my $talk = $self->{store}->get_client();
+    $self->make_message("Email $_") or die for 1..3;
+    $talk->select('INBOX');
+    $talk->store('1', 'annotation',
+                 ['/comment', ['value.priv', { Quote => 'one' }]]);
+    $talk->store('2', 'annotation',
+                 ['/comment', ['value.shared', { Quote => 'two' }]]);
+
+    my ($meta, $data, $service, $servername) = $self->_backup_setup();
+
+    xlog $self, "first backup fetches annotations for every message";
+    my $cmds = $self->_do_backup_logged($meta, $data, $service, $servername);
+    $self->assert_cmp_deeply([1, 2, 3], $self->_fannot_uids($cmds));
+    $self->assert_cmp_deeply(
+        bag(qw(header index annotations.1 annotations.2)),
+        $self->_fmeta_names($meta),
+    );
+
+    my $items = $self->_fetch_items($service, 'FANNOT', $servername,
+                                    'cassandane', 'INBOX', 1, 2, 3);
+    $self->assert_cmp_deeply(
+        {
+            '1.annotations' => [['/comment', 'cassandane', 'one']],
+            '2.annotations' => [['/comment', '', 'two']],
+        },
+        { map { $_ => decode_json($items->{$_}) } keys %$items },
+    );
+
+    xlog $self, "unchanged mailbox fetches nothing";
+    $cmds = $self->_do_backup_logged($meta, $data, $service, $servername);
+    $self->assert_cmp_deeply([], $self->_fannot_uids($cmds));
+
+    xlog $self, "flag change refetches only that message";
+    $self->_next_second();
+    $talk->store('3', '+flags', '(\\Flagged)');
+    $cmds = $self->_do_backup_logged($meta, $data, $service, $servername);
+    $self->assert_cmp_deeply([3], $self->_fannot_uids($cmds));
+
+    xlog $self, "removed annotation is removed from the backup";
+    $self->_next_second();
+    $talk->store('1', 'annotation', ['/comment', ['value.priv', undef]]);
+    $cmds = $self->_do_backup_logged($meta, $data, $service, $servername);
+    $self->assert_cmp_deeply([1], $self->_fannot_uids($cmds));
+    $self->assert_cmp_deeply(
+        bag(qw(header index annotations.2)),
+        $self->_fmeta_names($meta),
+    );
+
+    xlog $self, "compaction keeps the annotations";
+    my $restore = Cyrus::Backup::Restore->new($meta);
+    my $oldfile = $restore->TarFileName();
+    undef $restore;
+    sleep 1 while Cyrus::Backup::NewDataFilename(0) eq $oldfile;
+    Cyrus::Backup::CompressBackup($meta, $data, 'cassandane', undef, 101);
+    $self->assert_cmp_deeply(
+        bag(qw(header index annotations.2)),
+        $self->_fmeta_names($meta),
+    );
+}
