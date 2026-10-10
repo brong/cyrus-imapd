@@ -2804,6 +2804,9 @@ HIDDEN void jmap_querychanges_parse(jmap_req_t *req,
                     jmap_comparator_parse(req, parser, val, unsupported_sort,
                                           comp_cb, comp_rock, err);
                     jmap_parser_pop(parser);
+                    if (err && *err) {
+                        goto done;
+                    }
                 }
                 if (json_array_size(arg)) {
                     query->sort = arg;

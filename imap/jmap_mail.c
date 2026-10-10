@@ -3381,7 +3381,7 @@ struct emailquery_comparator_rock {
 static int _email_parse_comparator(jmap_req_t *req,
                                    struct jmap_comparator *comp,
                                    void *rock,
-                                   json_t **err __attribute__((unused)))
+                                   json_t **err)
 {
     struct emailquery_comparator_rock *crock = rock;
     size_t pos = crock->ncomparators++;
@@ -3404,6 +3404,22 @@ static int _email_parse_comparator(jmap_req_t *req,
             return pos == 0 &&
                    emailquery_groupby_validate(req, comp->jcomp,
                                                crock->contactfilter);
+        }
+        if (!strcmp(sp->name, "hasKeyword")
+            || !strcmp(sp->name, "someInThreadHaveKeyword"))
+        {
+            const char *keyword =
+                json_string_value(json_object_get(comp->jcomp, "keyword"));
+            if (!keyword || !jmap_email_keyword_is_valid(keyword)) {
+                struct buf path = BUF_INITIALIZER;
+                buf_printf(&path, "sort[%zu]", pos);
+                *err = json_pack("{s:s s:[s]}",
+                                 "type",
+                                 "invalidArguments",
+                                 "arguments",
+                                 buf_cstring(&path));
+                buf_free(&path);
+            }
         }
         return 1;
     }
