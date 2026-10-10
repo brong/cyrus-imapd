@@ -7680,7 +7680,10 @@ static int _snippet_get(jmap_req_t *req, json_t *filter,
                     json_object_del(jattachments, part_id);
                 }
             }
-            if (!json_object_size(jattachments)) {
+            if (!jmap_is_using(req, JMAP_MAIL_EXTENSION)) {
+                json_object_del(snippet, "attachments");
+            }
+            else if (!json_object_size(jattachments)) {
                 json_object_set_new(snippet, "attachments", json_null());
             }
             json_array_append_new(*snippets, json_deep_copy(snippet));
