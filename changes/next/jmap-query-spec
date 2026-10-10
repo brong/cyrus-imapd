@@ -1,0 +1,29 @@
+Description:
+
+JMAP /query and /queryChanges responses follow RFC 8620 more closely.
+`total` is only returned when the request sets `calculateTotal`.
+Responses no longer echo `filter`, `sort`, `collapseThreads` or `upToId`,
+and SearchSnippet/get no longer echoes `filter`.  Mailbox/query returns
+`anchorNotFound`, and Mailbox/queryChanges enforces `maxChanges`.
+
+
+Documentation:
+
+RFC 8620 sections 5.5 and 5.6.
+
+
+Config changes:
+
+None.
+
+
+Upgrade instructions:
+
+Clients that read `total` must set `calculateTotal: true`.  Clients that
+read the echoed arguments, including result references to `/filter`,
+must use the values from their own request instead.
+
+
+GitHub issue:
+
+None.
