@@ -1,0 +1,29 @@
+Description:
+
+JMAP request validation follows RFC 8620 more closely.  A request with
+duplicate JSON member names is notJSON.  /copy reports fromAccountNotFound
+and fromAccountNotSupportedByMethod for an unusable fromAccountId.  A
+missing or non-string sinceState is invalidArguments.  /set rejects
+overlapping patch paths, and Email/set patches below a keyword or
+mailboxId, with invalidPatch.
+
+
+Documentation:
+
+RFC 8620 sections 3.6, 5.2, 5.3 and 5.4.
+
+
+Config changes:
+
+None.
+
+
+Upgrade instructions:
+
+Clients that handle accountNotFound from a /copy should also handle
+fromAccountNotFound.
+
+
+GitHub issue:
+
+None.
