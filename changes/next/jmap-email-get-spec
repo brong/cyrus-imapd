@@ -1,0 +1,29 @@
+Description:
+
+JMAP Email/get, Email/parse and SearchSnippet/get follow RFC 8621 more
+closely.  maxBodyValueBytes accepts 0, an unknown charset sets
+isEncodingProblem, group names are decoded, asMessageIds is null for a
+header that isn't a list of message ids, and unknown bodyProperties are
+invalidArguments.  Email/parse returns null metadata, and SearchSnippet
+previews stay within 255 octets.
+
+
+Documentation:
+
+RFC 8621 sections 4.1, 4.2, 4.9 and 5.
+
+
+Config changes:
+
+None.
+
+
+Upgrade instructions:
+
+Clients requesting the imageSize or isDeleted body properties must
+include https://cyrusimap.org/ns/jmap/mail in using.
+
+
+GitHub issue:
+
+None.
