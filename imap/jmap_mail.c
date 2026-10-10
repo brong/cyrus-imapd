@@ -8378,8 +8378,9 @@ static int _email_getargs_parse(jmap_req_t *req __attribute__((unused)),
     }
 
     /* maxBodyValueBytes */
-    else if (!strcmp(key, "maxBodyValueBytes") &&
-             json_is_integer(arg) && json_integer_value(arg) > 0) {
+    else if (!strcmp(key, "maxBodyValueBytes") && json_is_integer(arg)
+             && json_integer_value(arg) >= 0)
+    {
         args->max_body_bytes = json_integer_value(arg);
     }
 
@@ -9432,6 +9433,20 @@ static json_t * _email_get_bodyvalue(struct body *part,
             part->content_size, part->encoding,
             &is_encoding_problem);
     if (!raw) goto done;
+
+    /* An unknown charset falls back to us-ascii in the body structure */
+    for (const struct param *param = part->params; param; param = param->next) {
+        if (!strcasecmpsafe(param->attribute, "charset") && param->value
+            && *param->value)
+        {
+            charset_t cs = charset_lookupname(param->value);
+            if (cs == CHARSET_UNKNOWN_CHARSET) {
+                is_encoding_problem = 1;
+            }
+            charset_free(&cs);
+            break;
+        }
+    }
 
     /* In-place remove CR characters from buffer */
     size_t i, j, rawlen = strlen(raw);
