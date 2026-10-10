@@ -1,0 +1,29 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_request_duplicate_member ($self)
+{
+    my $jmap = $self->{jmap};
+
+    # RFC 8620 3.6.1: a request that isn't I-JSON is notJSON, and
+    # I-JSON (RFC 7493 2.3) forbids duplicate member names
+    my $body = '{"using":["urn:ietf:params:jmap:core"],'
+             . '"using":["urn:ietf:params:jmap:core"],'
+             . '"methodCalls":[["Core/echo",{},"R1"]]}';
+
+    my $http_req = HTTP::Request->new(
+        POST => $jmap->api_uri,
+        [
+            'Content-Type' => 'application/json',
+            $jmap->_maybe_auth_header,
+        ],
+        $body,
+    );
+
+    my $http_res = $jmap->http_request($http_req);
+
+    $self->assert_str_equals("400", $http_res->code);
+    my $res = decode_json($http_res->decoded_content(charset => undef));
+    $self->assert_str_equals("urn:ietf:params:jmap:error:notJSON",
+                             $res->{type});
+}
