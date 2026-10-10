@@ -1,0 +1,36 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_mailbox_set_parent_self
+    ($self)
+{
+    my $jmap = $self->{jmap};
+    my $imaptalk = $self->{store}->get_client();
+
+    $imaptalk->create("INBOX.A") or die;
+    $imaptalk->create("INBOX.A.B") or die;
+
+    my $get_tree = sub {
+        my $res = $jmap->CallMethods([['Mailbox/get', {
+            properties => [ 'name', 'parentId' ],
+        }, "R1"]]);
+        return { map { $_->{id} => $_ } @{$res->[0][1]{list}} };
+    };
+
+    my $before = $get_tree->();
+    my %id = map { $_->{name} => $_->{id} } values %$before;
+
+    # A mailbox can't be its own parent, nor the child of its child
+    for my $parent (qw( A B )) {
+        my $res = $jmap->CallMethods([['Mailbox/set', {
+            update => { $id{A} => { parentId => $id{$parent} } },
+        }, "R1"]]);
+        $self->assert_cmp_deeply(
+            { type => 'invalidProperties', properties => [ 'parentId' ] },
+            $res->[0][1]{notUpdated}{$id{A}},
+            "parentId $parent",
+        );
+        $self->assert_cmp_deeply($before, $get_tree->(),
+            "tree unchanged after parentId $parent");
+    }
+}

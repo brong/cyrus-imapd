@@ -2513,6 +2513,10 @@ static void _mbox_update(jmap_req_t *req, struct mboxset_args *args,
         ptrarray_append(&strpool, newparentname);
 
         /* Reject cycles in mailbox tree. */
+        if (!strcmp(newparentname, mbentry->name)) {
+            jmap_parser_invalid(&parser, "parentId");
+            goto done;
+        }
         char *pname = xstrdup(newparentname);
         while (_findparent(pname, &pmbentry) == 0) {
             if (!strcmp(mbentry->uniqueid, pmbentry->uniqueid)) {
