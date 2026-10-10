@@ -197,6 +197,26 @@ EXPORTED void jmap_patchobject_applym(json_t *dst,
     }
 }
 
+EXPORTED bool jmap_patch_has_prefix_overlap(json_t *patch)
+{
+    const char *path;
+    json_t *jval;
+
+    json_object_foreach (patch, path, jval) {
+        size_t len = strlen(path);
+        const char *other;
+        json_t *jother;
+
+        json_object_foreach (patch, other, jother) {
+            if (!strncmp(other, path, len) && other[len] == '/') {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 EXPORTED json_t* jmap_patchobject_apply(json_t *val,
                                         json_t *patch,
                                         json_t *invalid,
