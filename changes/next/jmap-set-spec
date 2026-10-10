@@ -1,0 +1,26 @@
+Description:
+
+Mailbox/set includes omitted defaults (parentId, role, sortOrder) in
+created, as RFC 8620 requires.  Email/set rejects an update that changes
+an immutable property with invalidProperties, rather than ignoring it.
+
+
+Documentation:
+
+RFC 8620 section 5.3.
+
+
+Config changes:
+
+None.
+
+
+Upgrade instructions:
+
+Clients that sent full Email objects in an Email/set update must send only
+the properties they change.
+
+
+GitHub issue:
+
+None.
