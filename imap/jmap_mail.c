@@ -10228,6 +10228,17 @@ static int jmap_email_parse(jmap_req_t *req)
         }
         else if (mr) {
             _email_from_record(req, &getargs, mr, &email);
+            /* RFC 8621 4.9: a parsed blob has no metadata */
+            static const char *const metadata[] = { "id",
+                                                    "mailboxIds",
+                                                    "keywords",
+                                                    "receivedAt",
+                                                    NULL };
+            for (const char *const *p = metadata; email && *p; p++) {
+                if (json_object_get(email, *p)) {
+                    json_object_set_new(email, *p, json_null());
+                }
+            }
         }
 
         if (email) {
