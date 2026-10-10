@@ -1,0 +1,49 @@
+#!perl
+use Cassandane::Tiny;
+
+sub test_email_set_update_immutable
+    ($self)
+{
+    my $jmap = $self->default_user->jmap;
+
+    $self->make_message("foo") or die;
+    my $id = $jmap->request([[ 'Email/query', {} ]])
+                  ->single_sentence('Email/query')->arguments->{ids}[0];
+
+    my @props = qw( blobId threadId subject from receivedAt );
+    my $get = sub {
+        $jmap->request([[ 'Email/get', { ids => [ $id ], properties => \@props } ]])
+             ->single_sentence('Email/get')->arguments->{list}[0];
+    };
+    my $orig = $get->();
+
+    # RFC 8620 1.1: an immutable value MUST NOT change
+    for my $patch (
+        { subject    => 'changed' },
+        { from       => [ { name => 'X', email => 'x@example.com' } ] },
+        { receivedAt => '2021-01-02T03:04:05Z' },
+        { blobId     => 'Gnotablob' },
+        { 'subject/x' => 'changed' },
+    ) {
+        my ($prop) = map { s{/.*}{}r } keys %$patch;
+        my $res = $jmap->request([[ 'Email/set', {
+            update => { $id => $patch },
+        } ]]);
+        $self->assert_cmp_deeply(
+            { $id => { type => 'invalidProperties', properties => [ $prop ] } },
+            $res->single_sentence('Email/set')->arguments->{notUpdated},
+            "patch $prop",
+        );
+        $self->assert_cmp_deeply($orig, $get->(), "unchanged after $prop");
+    }
+
+    # RFC 8620 5.3: they may be sent unchanged
+    my %same = map { $_ => $orig->{$_} } qw( blobId threadId subject from );
+    my $res = $jmap->request([[ 'Email/set', {
+        update => { $id => { %same, keywords => { '$seen' => JSON::true } } },
+    } ]]);
+    $self->assert_cmp_deeply(
+        { $id => undef },
+        $res->single_sentence('Email/set')->arguments->{updated},
+    );
+}

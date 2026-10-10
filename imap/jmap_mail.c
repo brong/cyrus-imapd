@@ -13382,6 +13382,76 @@ static void _email_update_parse(jmap_req_t *req,
     buf_free(&buf);
 }
 
+/* Reject any immutable property in an Email/set update patch that
+ * would change it.  RFC 8620 5.3 lets a client send one unchanged. */
+static void _email_update_check_immutable(jmap_req_t *req,
+                                          const char *email_id,
+                                          json_t *jemail,
+                                          struct jmap_parser *parser)
+{
+    hash_table props = HASH_TABLE_INITIALIZER;
+    strarray_t names = STRARRAY_INITIALIZER;
+    const char *path;
+    json_t *jval;
+
+    construct_hash_table(&props, 8, 0);
+
+    json_object_foreach (jemail, path, jval) {
+        const char *slash = strchr(path, '/');
+        char *pname = slash ? xstrndup(path, slash - path) : xstrdup(path);
+        const jmap_property_t *prop = jmap_property_find(pname, &email_props);
+
+        if (prop && (prop->flags & JMAP_PROP_IMMUTABLE)) {
+            if (slash) {
+                /* patching into an immutable value always changes it */
+                jmap_parser_invalid(parser, pname);
+            }
+            else {
+                hash_insert(pname, (void *) 1, &props);
+                strarray_append(&names, pname);
+            }
+        }
+        free(pname);
+    }
+
+    if (strarray_size(&names)) {
+        char *mboxname = NULL;
+        uint32_t uid;
+        struct mailbox *mbox = NULL;
+        msgrecord_t *mr = NULL;
+        json_t *cur = NULL;
+
+        if (!jmap_email_find(req, NULL, email_id, &mboxname, &uid, NULL)
+            && !mailbox_open_irl(mboxname, &mbox)
+            && !msgrecord_find(mbox, uid, &mr))
+        {
+            jmap_email_get_with_props(req, &props, mr, &cur);
+        }
+
+        /* An email we can't read is reported as notFound later */
+        if (cur) {
+            const char *name;
+            int i;
+            strarray_foreach(&names, i, name)
+            {
+                if (!json_equal(json_object_get(jemail, name),
+                                json_object_get(cur, name)))
+                {
+                    jmap_parser_invalid(parser, name);
+                }
+            }
+        }
+
+        json_decref(cur);
+        msgrecord_unref(&mr);
+        mailbox_close(&mbox);
+        free(mboxname);
+    }
+
+    strarray_fini(&names);
+    free_hash_table(&props, NULL);
+}
+
 /* A plan to create, update or destroy messages per mailbox */
 struct email_updateplan {
     char *mboxname;       /* Mailbox IMAP name */
@@ -15022,6 +15092,7 @@ static void _email_update_bulk(jmap_req_t *req,
         struct email_update *update = xzmalloc(sizeof(struct email_update));
         update->email_id = email_id;
         _email_update_parse(req, jval, &parser, update);
+        _email_update_check_immutable(req, email_id, jval, &parser);
 
         /* Validate patched mailbox ids */
         if (update->patch_mailboxids && !json_array_size(parser.invalid)) {
