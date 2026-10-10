@@ -1291,8 +1291,10 @@ static int _mboxquery_can_calculate_changes(mboxquery_t *mbquery)
     return !strcmp(mbquery->req->userid, mbquery->req->accountid);
 }
 
-static int _mbox_query(jmap_req_t *req, struct jmap_query *query,
-                       const mboxquery_args_t *args)
+static int _mbox_query(jmap_req_t *req,
+                       struct jmap_query *query,
+                       const mboxquery_args_t *args,
+                       json_t **err)
 {
     int r = 0;
 
@@ -1368,8 +1370,8 @@ static int _mbox_query(jmap_req_t *req, struct jmap_query *query,
         json_array_append_new(query->ids, json_string(rec->id));
     }
     if (query->anchor && !seen_anchor) {
-        json_decref(query->ids);
-        query->ids = json_array();
+        *err = json_pack("{s:s}", "type", "anchorNotFound");
+        goto done;
     }
     if (result_pos >= 0) {
         query->result_position = result_pos;
@@ -1473,9 +1475,13 @@ static int jmap_mailbox_query(jmap_req_t *req)
     }
 
     /* Search for the mailboxes */
-    int r = _mbox_query(req, &query, &args);
+    int r = _mbox_query(req, &query, &args, &err);
     if (r) {
         jmap_error(req, jmap_server_error(r));
+        goto done;
+    }
+    if (err) {
+        jmap_error(req, err);
         goto done;
     }
 
@@ -1576,8 +1582,8 @@ static int jmap_mailbox_querychanges(jmap_req_t *req)
         highestmodseq = rock.highestmodseq;
     }
 
-    ssize_t i;
-    for (i = 0; i < mbquery->result.count; i++) {
+    size_t index = 0;
+    for (ssize_t i = 0; i < mbquery->result.count; i++) {
         mboxquery_record_t *mbrec = ptrarray_nth(&mbquery->result, i);
         if (mbrec->mbtype & MBTYPE_DELETED) {
             if (mbrec->foldermodseq > sincemodseq) {
@@ -1595,14 +1601,25 @@ static int jmap_mailbox_querychanges(jmap_req_t *req)
                 }
             }
         }
-        else if (mbrec->foldermodseq > sincemodseq && mbrec->shared_mbtype != _SHAREDMBOX_HIDDEN) {
-            json_array_append_new(query.added, json_pack("{s:s s:i}", "id", mbrec->id, "index", i));
-            hash_insert(mbrec->id, (void*)1, &removed);
-            if (highestmodseq < mbrec->foldermodseq) {
-                highestmodseq = mbrec->foldermodseq;
+        else if (mbrec->shared_mbtype != _SHAREDMBOX_HIDDEN) {
+            if (mbrec->foldermodseq > sincemodseq) {
+                json_array_append_new(query.added,
+                                      json_pack("{s:s s:I}",
+                                                "id",
+                                                mbrec->id,
+                                                "index",
+                                                (json_int_t) index));
+                if (mbrec->createdmodseq <= sincemodseq) {
+                    hash_insert(mbrec->id, (void *) 1, &removed);
+                }
+                if (highestmodseq < mbrec->foldermodseq) {
+                    highestmodseq = mbrec->foldermodseq;
+                }
             }
+            index++;
         }
     }
+    query.total = index;
     hash_iter *iter = hash_table_iter(&removed);
     while (hash_iter_next(iter)) {
         json_array_append_new(query.removed, json_string(hash_iter_key(iter)));
@@ -1610,6 +1627,14 @@ static int jmap_mailbox_querychanges(jmap_req_t *req)
     hash_iter_free(&iter);
     free_hash_table(&removed, NULL);
     _mboxquery_free(&mbquery);
+
+    if (query.max_changes
+        && json_array_size(query.added) + json_array_size(query.removed)
+               > query.max_changes)
+    {
+        jmap_error(req, json_pack("{s:s}", "type", "tooManyChanges"));
+        goto done;
+    }
 
     /* Build response */
     query.new_querystate = jmap_state_string(req, highestmodseq, MBTYPE_EMAIL, 0);
