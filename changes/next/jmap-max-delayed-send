@@ -1,0 +1,26 @@
+Description:
+
+JMAP EmailSubmission/set now enforces jmap_max_delayed_send.  A HOLDFOR
+or HOLDUNTIL parameter beyond the limit is rejected with
+invalidProperties.
+
+
+Documentation:
+
+The jmap_max_delayed_send option in imapd.conf(5).
+
+
+Config changes:
+
+jmap_max_delayed_send is now enforced, not just advertised.
+
+
+Upgrade instructions:
+
+Check jmap_max_delayed_send (default 512d) covers the longest delayed send
+your clients schedule.
+
+
+GitHub issue:
+
+None.

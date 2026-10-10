@@ -314,19 +314,25 @@ static int _emailsubmission_address_parse(json_t *addr,
                 *identity = val;
             }
             if (holduntil) {
+                time_t now = time(0);
+                time_t max_delay =
+                    config_getduration(IMAPOPT_JMAP_MAX_DELAYED_SEND);
+                if (max_delay < 0) max_delay = 0;
+
                 if (!strcasecmp(key, "HOLDFOR")) {
                     char *endptr = (char *) val;
                     unsigned long interval = val ? strtoul(val, &endptr, 10) : ULONG_MAX;
-                    time_t now = time(0);
 
                     if (endptr == val || *endptr != '\0' ||
-                        interval > 99999999 /* per RFC 4865 */) {
+                        interval > 99999999 /* per RFC 4865 */ ||
+                        (time_t) interval > max_delay) {
                         jmap_parser_invalid(parser, key);
                     }
                     else *holduntil = now + interval;
                 }
                 else if (!strcasecmp(key, "HOLDUNTIL")) {
-                    if (!val || time_from_iso8601(val, holduntil) < 0) {
+                    if (!val || time_from_iso8601(val, holduntil) < 0 ||
+                        *holduntil - now > max_delay) {
                         jmap_parser_invalid(parser, key);
                     }
                 }
