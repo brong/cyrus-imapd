@@ -962,20 +962,13 @@ static bool ical_uid_conflict(message_t *recreatemsg, message_t *destroymsg,
         reason = "uid_already_restored";
     }
     else {
-        struct caldav_data *cdata = NULL;
+        /* Undoing an update replaces the live version in place, which
+         * can't add a conflict even if the UID already has duplicates */
+        if (!destroymsg) {
+            struct caldav_data *cdata = NULL;
 
-        caldav_lookup_uid(crock->caldavdb, uid, &cdata);
-        if (cdata->dav.imap_uid) {
-            /* Undoing an update replaces the live version in place */
-            const struct index_record *oldrecord =
-                destroymsg ? msg_record(destroymsg) : NULL;
-            const char *mbox = cdata->dav.mailbox_byname ?
-                mailbox_name(mailbox) : mailbox_uniqueid(mailbox);
-
-            if (!oldrecord || oldrecord->uid != cdata->dav.imap_uid ||
-                strcmp(cdata->dav.mailbox, mbox)) {
-                reason = "uid_exists";
-            }
+            caldav_lookup_uid(crock->caldavdb, uid, &cdata);
+            if (cdata->dav.imap_uid) reason = "uid_exists";
         }
 
         if (!reason) hash_insert(uid, (void *) 1, &crock->uids);
